@@ -1,3 +1,13 @@
+# ======================================================================================
+# ALEMBIC MIGRATION TEMPLATE (script.py.mako)
+# ======================================================================================
+# This is a blueprint/template file used automatically by Alembic.
+# Whenever you run 'alembic revision', Alembic copies this file, replaces the ${} 
+# placeholders with real data (dates, IDs), and creates a new script in 'versions/'.
+# Do NOT modify the syntax of this file unless you want to change the global structure 
+# of all future migration files.
+# ======================================================================================
+
 """${message}
 
 Revision ID: ${up_revision}

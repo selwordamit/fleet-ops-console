@@ -1,3 +1,16 @@
+# ======================================================================================
+# DATABASE SESSION MANAGEMENT | ניהול צינורות החיבור בזמן ריצה
+# ======================================================================================
+# This file manages runtime communication between FastAPI and the Postgres Docker.
+#
+# Core Components:
+# 1. Engine: The main, long-lived network highway to the DB. Created once and shared.
+# 2. Session Factory: A factory that creates short-lived, async sessions ("phone calls")
+#    for executing specific queries (inserts, selects).
+# 3. get_db_session(): A clean generator dependency for FastAPI endpoints that safely
+#    opens and guarantees the closure of DB connections.
+# ======================================================================================
+
 from collections.abc import AsyncGenerator
 
 from sqlalchemy import text

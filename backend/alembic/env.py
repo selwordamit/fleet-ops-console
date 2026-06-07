@@ -1,13 +1,28 @@
-import asyncio
-from logging.config import fileConfig
+# ======================================================================================
+# ALEMBIC ENV.PY | The Migration Engine & Database Bridge
+# ======================================================================================
+# This script runs automatically whenever an 'alembic' CLI command is executed.
+#
+# Core Responsibilities:
+# 1. Single Source of Truth: Dynamically injects 'settings.database_url' from the 
+#    app's core config into Alembic, preventing hardcoded credentials in source control.
+# 2. Autogenerate Target: Connects 'Base.metadata' to Alembic so it can automatically
+#    detect changes in your SQLAlchemy models (e.g., Vehicles, Agents).
+# 3. Async/Sync Wrapper: Adapts Alembic's native synchronous execution to work seamlessly
+#    with the project's asyncpg driver using SQLAlchemy's 'connection.run_sync()' tool.
+# ======================================================================================
 
-from sqlalchemy import pool
-from sqlalchemy.ext.asyncio import async_engine_from_config
+import asyncio  # Runs the async Alembic migration flow inside an event loop.
 
-from alembic import context
+from logging.config import fileConfig  # Loads Alembic logging settings from alembic.ini.
 
-from app.core.config import settings
-from app.db.base import Base
+from sqlalchemy import pool  # Lets us disable connection pooling during migrations.
+from sqlalchemy.ext.asyncio import async_engine_from_config  # Builds an async SQLAlchemy engine from Alembic config.
+
+from alembic import context  # Alembic runtime object used to configure and run migrations.
+
+from app.core.config import settings  # App settings; used to read the database URL from one source of truth.
+from app.db.base import Base  # Shared ORM Base; Alembic reads Base.metadata to detect model/table changes.
 
 
 # Alembic's runtime config object.
@@ -31,7 +46,7 @@ if config.config_file_name is not None:
 # will inherit from Base and register their tables here.
 target_metadata = Base.metadata
 
-
+# Used to run migrations without DB connection
 def run_migrations_offline() -> None:
     """Generate SQL migration output without connecting to the database.
 
