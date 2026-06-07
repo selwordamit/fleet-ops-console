@@ -6,6 +6,8 @@ A real-time fleet operations console. Simulated vehicles continuously report tel
 
 > **Architecture overview:** `docs/architecture.md` explains the service relationships, data flow, hierarchy, and scaling notes.
 
+> **Stack decisions:** `docs/stack-decisions.md` explains why each major technology was chosen, with alternatives, tradeoffs, and implementation status.
+
 > **Decision tracking:** significant implementation decisions must be logged in `docs/decision-log.md`.
 
 > **Progress tracking:** `docs/PROJECT_STATE.md` is the current working state of the project. Update it before starting a new large phase or clearing context.
