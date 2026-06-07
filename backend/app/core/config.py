@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     debug: bool = False 
     api_prefix: str = "/api" # Instead of hardcoding "/api" in the route definitions, we can use this setting.
 
-    # asyncpg driver so SQLAlchemy's async engine can use it directly in Phase 02B.2.
+    # asyncpg driver - asynchronous driver for PostgreSQL, compatible with SQLAlchemy's async support.
     database_url: str = "postgresql+asyncpg://fleetops:fleetops@localhost:5432/fleetops"
 
     model_config = {"env_file": ".env"}
