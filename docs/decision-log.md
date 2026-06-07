@@ -4,7 +4,7 @@ A running log of significant technical decisions made during implementation.
 
 Use this document to show deliberate engineering thinking. Each entry should explain the decision, alternatives, reason, and tradeoff.
 
-Major stack choices are already described in `docs/project-spec.md` and `docs/architecture.md`. This log is for decisions made during the build: folder structure, implementation tradeoffs, temporary shortcuts, fallbacks, and scope decisions.
+Major stack choices are already described in `docs/onboarding-project-spec.md` and `docs/architecture.md`. This log is for decisions made during the build: folder structure, implementation tradeoffs, temporary shortcuts, fallbacks, and scope decisions.
 
 ---
 

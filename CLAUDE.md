@@ -2,7 +2,7 @@
 
 A real-time fleet operations console. Simulated vehicles continuously report telemetry: GPS position, speed, battery, and status. Operators watch them live on a map, receive real-time alerts when rules trip, and send commands back to vehicles with acknowledgements.
 
-> **Source of truth:** the full project spec is `docs/project-spec.md`. When anything conflicts with this file, the project spec wins.
+> **Source of truth:** the full project spec is `docs/onboarding-project-spec.md`. When anything conflicts with this file, the project spec wins.
 
 > **Architecture overview:** `docs/architecture.md` explains the service relationships, data flow, hierarchy, and scaling notes.
 
@@ -102,7 +102,7 @@ simulator/
 infra/                 — optional infra notes/scripts
 
 docs/
-  project-spec.md      — original project requirements
+  onboarding-project-spec.md — original team-lead requirements and single source of truth
   architecture.md      — architecture and data-flow explanation
   decision-log.md      — implementation decisions
   PROJECT_STATE.md     — current progress and working proof
@@ -178,7 +178,7 @@ The backend Pydantic event schemas and frontend TypeScript types must match this
 
 ## Working With Claude Code
 
-- Read `CLAUDE.md`, `docs/project-spec.md`, `docs/architecture.md`, and `docs/PROJECT_STATE.md` before starting a task.
+- Read `CLAUDE.md`, `docs/onboarding-project-spec.md`, `docs/architecture.md`, and `docs/PROJECT_STATE.md` before starting a task.
 - Use the docs as context, not permission to implement the entire system.
 - Implement only the current requested step.
 - Do not add extra features without being asked.
@@ -194,6 +194,45 @@ The backend Pydantic event schemas and frontend TypeScript types must match this
 - Small fixes inside the same phase can stay in the same session.
 - Before clearing context, update `docs/PROJECT_STATE.md`.
 - Significant implementation decisions go into `docs/decision-log.md`.
+
+---
+
+## Decision Logging Rules
+
+Whenever a step includes a meaningful technical decision, tradeoff, or architectural choice, Claude must update `docs/decision-log.md`.
+
+Log a decision when the step involves any of:
+
+- Choosing one library/framework/tool over another.
+- Choosing where data is stored, for example Postgres vs Redis.
+- Choosing whether something is source-of-truth or ephemeral state.
+- Choosing communication style, for example REST vs WebSocket vs Socket.IO.
+- Choosing security/auth behavior, for example JWT, refresh tokens, RBAC.
+- Choosing project structure, folder placement, or layering when there is a real alternative.
+- Choosing async vs sync implementation.
+- Choosing Docker/service boundaries.
+- Choosing validation, error handling, logging, or testing strategy.
+
+Do NOT log trivial changes such as:
+
+- Adding imports.
+- Creating `__init__.py`.
+- Adding `.gitkeep`.
+- Renaming a local variable.
+- Adding obvious boilerplate.
+- Fixing formatting.
+
+Each `docs/decision-log.md` entry must include:
+
+- **Date**
+- **Context** — what the step was and why a decision was needed.
+- **Decision** — what was chosen.
+- **Alternatives considered** — the real options not taken.
+- **Reason** — why the chosen option won.
+- **Tradeoff / cost** — what is given up or made harder.
+- **Impact on the project** — what this affects going forward.
+
+If a step includes decisions that should be logged, Claude must update `docs/decision-log.md` in the same step and mention it in the final summary.
 
 ---
 
