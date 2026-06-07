@@ -106,6 +106,7 @@ infra/                 — optional infra notes/scripts
 docs/
   onboarding-project-spec.md — original team-lead requirements and single source of truth
   architecture.md      — architecture and data-flow explanation
+  stack-decisions.md   — major technology choices, alternatives, tradeoffs, and implementation status
   decision-log.md      — implementation decisions
   PROJECT_STATE.md     — current progress and working proof
   phases/              — phase-specific notes
@@ -146,6 +147,7 @@ Rules:
 - WebSocket must be authenticated in the final secured version, not only REST.
 - Passwords are always hashed with bcrypt via passlib. Never store plaintext.
 - Command status is always one of: `pending | acknowledged | failed | expired`.
+  - The original spec requires `pending`, `acknowledged`, and `failed`. `expired` is a project extension for commands that time out with no acknowledgement.
 
 ---
 

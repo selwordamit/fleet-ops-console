@@ -243,6 +243,8 @@ Command statuses:
 pending | acknowledged | failed | expired
 ```
 
+The original spec requires `pending`, `acknowledged`, and `failed`. `expired` is a project extension for commands that time out with no acknowledgement.
+
 ---
 
 ## Offline Detection
