@@ -9,12 +9,18 @@ from sqlalchemy.ext.asyncio import (
 
 from app.core.config import settings
 
-# One engine per process: it owns the connection pool, so it must be created once
-# and shared, not per-request.
+
+# The engine is the main database connection object.
+# It owns the connection pool and should be created once per backend process,
+# not inside every request.
 engine = create_async_engine(settings.database_url)
 
-# Sessions are created from this factory. expire_on_commit=False keeps objects usable
-# after commit, which matters for async code that reads attributes post-commit.
+
+# This factory creates AsyncSession objects.
+# Each API request will later receive one session and use it to talk to PostgreSQL.
+#
+# expire_on_commit=False keeps model attributes available after commit,
+# which is useful in async code after saving an object.
 async_session_factory = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
@@ -23,14 +29,16 @@ async_session_factory = async_sessionmaker(
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    # Yields a session and guarantees it is closed even if the caller raises.
-    # Shaped as a generator so it can be used directly as a FastAPI dependency later.
+    # FastAPI will use this function as a dependency later.
+    # It opens a DB session, gives it to the request, and closes it automatically.
     async with async_session_factory() as session:
         yield session
 
 
 async def check_db_connection() -> bool:
-    # Minimal liveness probe: a successful SELECT 1 proves the engine can reach Postgres.
+    # Simple live DB check.
+    # If SELECT 1 succeeds, the backend can connect to PostgreSQL.
     async with engine.connect() as conn:
         await conn.execute(text("SELECT 1"))
+
     return True
