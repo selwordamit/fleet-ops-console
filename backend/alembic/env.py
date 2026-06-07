@@ -23,6 +23,7 @@ from alembic import context  # Alembic runtime object used to configure and run 
 
 from app.core.config import settings  # App settings; used to read the database URL from one source of truth.
 from app.db.base import Base  # Shared ORM Base; Alembic reads Base.metadata to detect model/table changes.
+import app.models  # noqa: F401  # Side-effect import: registers all models on Base.metadata for autogenerate.
 
 
 # Alembic's runtime config object.

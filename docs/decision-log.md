@@ -106,3 +106,35 @@ Tradeoff: Someone reading `alembic.ini` alone will not see the DB URL; they must
 
 Verification: Alembic commands loaded `env.py` and connected successfully.
 
+---
+
+## 2026-06-07 | First Agent model: integer PK, free-form string status
+
+Context: First real business model (`agents`) needed to prove the model -> metadata -> migration -> table pipeline, without over-engineering fields.
+
+Decision: Use an integer surrogate primary key and a plain `String(20)` `status` (server default `offline`), with `name`, `type`, nullable `last_seen`, and `created_at`/`updated_at` timestamps.
+
+Alternatives: UUID primary key; a database enum or `CheckConstraint` to restrict `status` to idle/en-route/stopped/offline.
+
+Reason: Simplest reasonable first version. Integer PK and a string status keep the first migration readable and easy to evolve; constraints can be added deliberately later.
+
+Tradeoff: No DB-level guarantee of valid `status` values yet; switching the PK type later would require a migration. Validation will live in Pydantic/services for now.
+
+Verification: `alembic revision --autogenerate` detected the table; `alembic upgrade head` applied it; `psql \d agents` shows all 7 columns with `status` defaulting to `offline`; `pytest` confirms `agents` is in `Base.metadata`.
+
+---
+
+## 2026-06-07 | Keep alembic.ini ASCII-only and comments on their own line
+
+Context: Alembic broke completely (`UnicodeDecodeError`, then a bad `script_location`) after documentation comments were added to `alembic.ini`.
+
+Decision: Keep `alembic.ini` ASCII-only and never place inline comments after a value.
+
+Alternatives: Force a UTF-8 read of the ini; leave the rich comments and work around them.
+
+Reason: Alembic reads `alembic.ini` with the OS locale encoding (cp1255 on this Windows machine), which cannot decode non-ASCII bytes such as emoji; and Python's configparser does not strip inline comments, so a trailing `# ...` becomes part of the value (`script_location`).
+
+Tradeoff: Comments in `alembic.ini` must stay plain ASCII and on their own lines, which is slightly less expressive.
+
+Verification: After removing the emoji and moving the inline comment, `alembic current`, `revision --autogenerate`, and `upgrade head` all ran successfully.
+
