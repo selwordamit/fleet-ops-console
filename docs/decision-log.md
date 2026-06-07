@@ -28,5 +28,81 @@ Verification: How we checked that the decision works in practice.
 
 ## Entries
 
-<!-- Add real implementation decisions here as the project progresses. -->
+## 2026-06-07 | Single source of truth: onboarding-project-spec.md
+
+Context: We had confusion between `onboarding-project-spec.md` and `project-spec.md`.
+
+Decision: Keep `onboarding-project-spec.md` as the only authoritative original requirements document and remove `project-spec.md` to avoid ambiguity.
+
+Alternatives: Keep both specs; use `project-spec.md` as a separate working spec.
+
+Reason: One spec avoids contradictions and makes project/Claude reasoning simpler.
+
+Tradeoff: Less separation between original requirements and working interpretation, so implementation notes must live in `architecture.md`, `PROJECT_STATE.md`, and this decision log instead.
+
+Verification: Stale references updated across `CLAUDE.md` and `docs/decision-log.md`; no remaining links to `project-spec.md`.
+
+---
+
+## 2026-06-07 | Docker Postgres for local runtime
+
+Context: We needed a reproducible local PostgreSQL environment.
+
+Decision: Run PostgreSQL through docker-compose using the `fleetops` database/user/password.
+
+Alternatives: Use a locally installed Postgres service.
+
+Reason: Docker gives a predictable, project-specific DB environment.
+
+Tradeoff: Requires Docker running and port management. We hit a local Postgres conflict on port 5432 and resolved it by stopping the local service.
+
+Verification: `docker compose exec postgres psql -U fleetops -d fleetops -c "SELECT 1;"` returned `1`.
+
+---
+
+## 2026-06-07 | SQLAlchemy async with asyncpg
+
+Context: The backend is FastAPI async and needs DB access.
+
+Decision: Use the SQLAlchemy async engine/session with the asyncpg driver.
+
+Alternatives: Use a synchronous SQLAlchemy driver; use raw asyncpg directly.
+
+Reason: SQLAlchemy gives ORM/session structure while asyncpg matches the async backend.
+
+Tradeoff: Async setup is slightly more complex than sync SQLAlchemy.
+
+Verification: `check_db_connection()` returned `True` and `python -m pytest tests/ -q` passed.
+
+---
+
+## 2026-06-07 | Alembic async migration infrastructure
+
+Context: We need reproducible database schema changes before creating business tables.
+
+Decision: Add Alembic configured for async SQLAlchemy.
+
+Alternatives: Create tables manually; delay migrations until later; use a sync migration driver.
+
+Reason: Alembic gives versioned, reviewable schema changes and keeps the DB reproducible.
+
+Tradeoff: The async `env.py` is more complex than the default sync template.
+
+Verification: `python -m alembic history`, `python -m alembic upgrade head --sql`, and `python -m alembic current` completed without errors.
+
+---
+
+## 2026-06-07 | Alembic reads DATABASE_URL from application settings
+
+Context: Alembic needs the DB URL.
+
+Decision: `env.py` reads `settings.database_url` instead of storing the URL in `alembic.ini`.
+
+Alternatives: Put `sqlalchemy.url` directly in `alembic.ini`.
+
+Reason: Keeps one source of truth for DB configuration and avoids credentials in static config.
+
+Tradeoff: Someone reading `alembic.ini` alone will not see the DB URL; they must know `env.py` injects it from settings.
+
+Verification: Alembic commands loaded `env.py` and connected successfully.
 
