@@ -54,7 +54,7 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** Fast ephemeral state and cross-worker pub/sub keep the map responsive without scanning telemetry history; clearly separated from Postgres's durable role.
 - **Alternatives considered:** In-memory process state (does not scale across workers), Postgres LISTEN/NOTIFY.
 - **Tradeoff / cost:** Another service to run; must keep cache/durable responsibilities distinct.
-- **Status:** planned.
+- **Status:** partial — connectivity implemented (async client + `check_redis_connection()`); latest-state cache, pub/sub, rate limiting, refresh-token store, presence, and offline detection still planned.
 
 ## Auth — JWT access/refresh + RBAC
 
@@ -124,5 +124,5 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 
 ## Current Status Summary
 
-- **Implemented:** FastAPI base app, `/health` endpoint, typed settings, `DATABASE_URL`, Docker Postgres, SQLAlchemy async session foundation, Alembic infrastructure.
-- **Planned / not yet implemented:** Redis, Socket.IO, JWT/RBAC, passlib/bcrypt, frontend (React/Vite/Leaflet/TanStack/Zustand/shadcn/Recharts), simulator behavior, telemetry models, alerts, commands.
+- **Implemented:** FastAPI base app, `/health` endpoint, typed settings, `DATABASE_URL`, Docker Postgres, SQLAlchemy async session foundation, Alembic infrastructure, first `Agent` model + migration, Redis connectivity (`REDIS_URL`, async client, `check_redis_connection()`).
+- **Planned / not yet implemented:** Redis usage beyond connectivity (latest-state cache, pub/sub, rate limiting, refresh-token store, presence, offline detection), Socket.IO, JWT/RBAC, passlib/bcrypt, frontend (React/Vite/Leaflet/TanStack/Zustand/shadcn/Recharts), simulator behavior, telemetry/alert/command models, alerts, commands.
