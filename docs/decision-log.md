@@ -138,3 +138,19 @@ Tradeoff: Comments in `alembic.ini` must stay plain ASCII and on their own lines
 
 Verification: After removing the emoji and moving the inline comment, `alembic current`, `revision --autogenerate`, and `upgrade head` all ran successfully.
 
+---
+
+## 2026-06-07 | Redis client foundation: redis-py asyncio, shared client
+
+Context: The `redis` service existed in docker-compose, but the backend had no Redis client or config yet. We wanted minimal connectivity before building telemetry/cache logic.
+
+Decision: Use the official `redis` package (`redis.asyncio`) with a single shared async client created at import time and `decode_responses=True`, plus a `check_redis_connection()` PING probe — mirroring the shared SQLAlchemy engine pattern in `app/db/session.py`.
+
+Alternatives: Per-request Redis clients; the legacy `aioredis` library; in-memory process state instead of Redis; delaying Redis until telemetry is built.
+
+Reason: redis-py is the official, maintained client and is async-native; a shared client is a simple, consistent foundation that matches the existing DB engine approach. `decode_responses=True` keeps string keys/values ergonomic.
+
+Tradeoff: A module-level client is simple but will need a proper FastAPI startup/shutdown lifecycle (connect/`aclose`) later; `decode_responses=True` is convenient for strings but unsuitable for binary payloads without an override.
+
+Verification: `python -m pytest tests/ -q` passed (12) and a live Redis PING via `check_redis_connection()` returned `True`.
+

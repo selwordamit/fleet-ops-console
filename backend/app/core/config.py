@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     # asyncpg driver - asynchronous driver for PostgreSQL, compatible with SQLAlchemy's async support.
     database_url: str = "postgresql+asyncpg://fleetops:fleetops@localhost:5432/fleetops"
 
+    # Redis connection string. Matches the docker-compose redis service; db 0 is the default.
+    redis_url: str = "redis://localhost:6379/0"
+
     model_config = {"env_file": ".env"}
 
 
