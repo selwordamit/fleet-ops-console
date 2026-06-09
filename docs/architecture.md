@@ -65,11 +65,14 @@ Python service that fakes many vehicles. It keeps in-memory state per simulated 
 
 Responsibilities:
 - Generate fake vehicle location, speed, battery, and status.
-- Register or ensure simulated agents exist through backend APIs.
+- Register simulated agents through backend APIs. *(Current implementation registers **new** agents on every run; it does not reuse, upsert, or reset existing agents.)*
 - POST telemetry to the backend only.
+- Support configurable agent count and update interval for load testing.
+
+Future improvements (not implemented yet):
+- Reuse / ensure existing simulated agents instead of creating duplicates on every run.
 - Receive forwarded commands from the backend.
 - Send command acknowledgements back through the backend.
-- Support configurable agent count and update interval for load testing.
 
 ### Backend API
 

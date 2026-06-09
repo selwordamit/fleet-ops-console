@@ -6,7 +6,13 @@ This file is the current working state of the project. Update it after each mean
 
 ## Current Phase
 
-Step 4 — Current-state APIs. Ingestion (`POST /api/agents/{agent_id}/telemetry`) persists history to Postgres and updates Redis latest state, the minimal Agent API (create/list/get) registers agents through backend REST, and `GET /api/agents/current-state` now reads agents from Postgres and their latest state from Redis so clients never touch the cache directly. API-level status enum validation now restricts `AgentCreate.status` and `TelemetryCreate.status` to the allowed values before the simulator is built. Still pending in this area: telemetry-history read API and `/health` connectivity reporting.
+Backend REST core + basic simulator verified. The simulator checkpoint was implemented before frontend/WebSocket to verify Simulator → Backend communication early — so this does **not** mean every original build-order step before Step 8 is complete (frontend, WebSocket, alerts, commands, auth/RBAC are all still not implemented; see *Known Issues / Not Implemented Yet*).
+
+The backend REST core that the simulator exercises: ingestion (`POST /api/agents/{agent_id}/telemetry`) persists history to Postgres and updates Redis latest state, the minimal Agent API (create/list/get) registers agents through backend REST, and `GET /api/agents/current-state` reads agents from Postgres and their latest state from Redis so clients never touch the cache directly. API-level status enum validation restricts `AgentCreate.status` and `TelemetryCreate.status` to the allowed values.
+
+The basic simulator now registers fake agents and POSTs telemetry **only** through the backend REST API (`POST /api/agents`, `POST /api/agents/{id}/telemetry`) — it never touches Postgres or Redis directly. It is configurable via environment variables (mode, agent count, interval, base location, spread, scenario file) and supports two placement modes: `local_cluster` (controlled spread around a base point) and `fixed_points` (exact locations from a scenario JSON file). See `docs/simulator-usage.md` for the run/verify guide.
+
+Still pending in the backend API area: telemetry-history read API and `/health` connectivity reporting.
 
 ---
 
@@ -65,6 +71,18 @@ Step 4 — Current-state APIs. Ingestion (`POST /api/agents/{agent_id}/telemetry
 - `AgentCreate.status` and `TelemetryCreate.status` are now typed as `AgentStatus` (was free-form `str`). Invalid statuses are rejected at the API boundary with `422`.
 - Request models use `use_enum_values=True`, so the validated `status` is a plain string — persistence to Postgres/Redis and response serialization stay clean (response schemas remain `str`).
 - API-layer validation only: the SQLAlchemy `String` columns are unchanged. No migration, no PostgreSQL enum, no DB `CheckConstraint`.
+
+### Step 8 — Simulator (basic, configurable, REST-only) ✓
+
+- Standalone Python service under `simulator/app/` that behaves like external hardware: it talks **only** to the backend over REST and never touches Postgres or Redis directly.
+- `BackendClient` (`client.py`) wraps `POST /api/agents` (register) and `POST /api/agents/{id}/telemetry` (telemetry) over a reusable `requests.Session`; failures are logged and skipped instead of crashing the run.
+- `SimulatorConfig.from_env` (`config.py`) reads all settings from environment variables with safe defaults: `BACKEND_URL`, `SIMULATION_MODE`, `AGENT_COUNT`, `TELEMETRY_INTERVAL_SECONDS`, `BASE_LAT`, `BASE_LNG`, `SPREAD_RADIUS_KM`, `SCENARIO_FILE`.
+- Two **controlled** placement modes (`placement.py`):
+  - `local_cluster` — deterministic "sunflower" spread of `AGENT_COUNT` agents within `SPREAD_RADIUS_KM` of `BASE_LAT`/`BASE_LNG` (default Tel Aviv). Used for clustering/load-style tests.
+  - `fixed_points` — exact agent locations loaded from a scenario JSON file (`AGENT_COUNT` ignored; count = entries in the file). Used for stable demos.
+  - Placement is always controlled/configurable — never uncontrolled random placement across Israel.
+- `Simulator` engine (`simulator.py`) registers agents, then runs a telemetry loop that, per tick, advances each agent with a small controlled random-walk step, drains battery, and reports a weighted status (`idle`/`en-route`/`stopped`/`offline`, speed only when `en-route`). Stopped cleanly with Ctrl+C.
+- Run with `python -m simulator.app.main`. Verified end-to-end with 3 agents.
 
 ---
 
@@ -155,6 +173,29 @@ python -m pytest tests/ -q
 
 python -c "from app.schemas.agent import AgentCreate; a=AgentCreate(name='T1',type='truck',status='en-route'); print(repr(a.status), type(a.status) is str)"
   → 'en-route' True   (validated status is a plain string for clean persistence/serialization)
+
+# Simulator (postgres + redis + backend up) — verified end-to-end with 3 agents
+# Run from the repo root:
+SIMULATION_MODE=local_cluster AGENT_COUNT=3 python -m simulator.app.main
+  → local_cluster generated 3 agents around the base point
+  → each agent registered through backend REST (POST /api/agents) and got a DB id
+  → telemetry ticks sent successfully (POST /api/agents/{id}/telemetry), e.g. "Telemetry tick: 3/3 sent"
+
+# Postgres confirms growing telemetry history while the simulator runs
+docker compose exec postgres psql -U fleetops -d fleetops -c "SELECT count(*) FROM telemetry;"
+  → row count increases on each tick
+docker compose exec postgres psql -U fleetops -d fleetops -c "SELECT id, name, type, status FROM agents;"
+  → the 3 simulator agents are persisted
+
+# Redis confirms latest state is updated for each simulator agent
+docker compose exec redis redis-cli KEYS "agent:*:state"
+  → one key per registered simulator agent
+docker compose exec redis redis-cli GET "agent:1:state"
+  → latest telemetry snapshot (lat/lng/speed/battery/status/recorded_at)
+
+# Current-state API shows the simulator data
+# GET http://localhost:8000/api/agents/current-state
+#   → 200 OK, the simulator agents with populated "latest_state"
 ```
 
 Notes:
@@ -176,11 +217,27 @@ Notes:
 - No User, Alert, or Command models yet.
 - Telemetry is a single simple table; no partitioning or retention yet (deferred scalability work).
 - No WebSocket/Socket.IO implementation.
-- No simulator behavior.
 - No frontend UI.
-- No alerts or commands.
+- No alerts or commands (no command creation, no ACK flow).
 - No auth/JWT/RBAC.
 - No offline detection.
+
+### Simulator — implemented, with known deferrals
+
+The basic simulator works and is verified, but the following are intentionally not implemented yet:
+
+- No `Dockerfile` / Compose wiring for the simulator — it is run locally via `python -m simulator.app.main`.
+- No WebSocket — the simulator only uses REST; it does not consume live events.
+- No command/ACK support — the simulator cannot yet receive or acknowledge commands.
+- No simulator-side auth/RBAC (matches the still-unprotected backend routes).
+- No reuse / upsert / reset of agents.
+- Sends are sequential and synchronous (one HTTP request per agent per tick); no async or batched sending.
+
+Known simulator tradeoffs:
+
+- **Repeated runs create new agents** — there is no reuse/upsert, so every run registers a fresh set; dev cleanup is currently manual (see `docs/simulator-usage.md`).
+- `local_cluster` movement is a **controlled random walk**, not real route/road simulation.
+- High agent counts (e.g. ~1000) may require larger `TELEMETRY_INTERVAL_SECONDS`, or future async/batched sends, because requests are currently sequential and synchronous.
 
 ---
 
