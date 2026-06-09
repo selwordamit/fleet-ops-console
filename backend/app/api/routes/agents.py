@@ -2,12 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
-from app.schemas.agent import AgentCreate, AgentRead
+from app.schemas.agent import AgentCreate, AgentCurrentState, AgentRead
 from app.services.agent import (
     AgentNotFoundError,
     create_agent,
     get_agent_by_id,
     get_agents,
+    get_current_state,
 )
 
 router = APIRouter()
@@ -31,6 +32,15 @@ async def list_all_agents(
     session: AsyncSession = Depends(get_db_session),
 ) -> list[AgentRead]:
     return await get_agents(session)
+
+
+# Declared before "/agents/{agent_id}" so the literal "current-state" path is not
+# captured by the int path parameter (which would 422 on the non-numeric value).
+@router.get("/agents/current-state", response_model=list[AgentCurrentState])
+async def list_current_state(
+    session: AsyncSession = Depends(get_db_session),
+) -> list[AgentCurrentState]:
+    return await get_current_state(session)
 
 
 @router.get("/agents/{agent_id}", response_model=AgentRead)

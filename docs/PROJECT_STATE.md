@@ -6,7 +6,7 @@ This file is the current working state of the project. Update it after each mean
 
 ## Current Phase
 
-Step 3 — Backend core telemetry flow. Ingestion endpoint (`POST /api/agents/{agent_id}/telemetry`) persists history to Postgres and updates latest state in Redis, and a minimal Agent API (create/list/get) now lets agents be registered through backend REST instead of manual SQL. Still pending in this area: current-state read APIs, telemetry-history read API, and `/health` connectivity reporting.
+Step 4 — Current-state APIs. Ingestion (`POST /api/agents/{agent_id}/telemetry`) persists history to Postgres and updates Redis latest state, the minimal Agent API (create/list/get) registers agents through backend REST, and `GET /api/agents/current-state` now reads agents from Postgres and their latest state from Redis so clients never touch the cache directly. Still pending in this area: telemetry-history read API and `/health` connectivity reporting.
 
 ---
 
@@ -51,9 +51,13 @@ Step 3 — Backend core telemetry flow. Ingestion endpoint (`POST /api/agents/{a
 - Agents are now created through backend REST; manual SQL seeding is no longer required. This unblocks the simulator's "talks only to the backend over REST" constraint.
 - Intentionally scoped to create/list/get only — no update/delete.
 
----
+### Step 4 — Current-state API ✓
 
-## Key Decisions
+- New Redis read accessor `read_agent_state(agent_id)` (`app/cache/agent_state.py`) reads `agent:{id}:state`, reusing `agent_state_key`; returns `None` on a cache miss instead of raising.
+- Pydantic schemas: `AgentLatestState` (Redis snapshot: lat/lng/speed/battery/status/recorded_at) and `AgentCurrentState` (agent identity + nullable `latest_state`).
+- Service `get_current_state`: lists agents from Postgres, reads each agent's Redis state, assembles the response. An agent with no cached state is returned with `latest_state: null` rather than skipped.
+- `GET /api/agents/current-state`: returns `200` with the list. Declared **before** `/api/agents/{agent_id}` so the literal path is not captured by the int path parameter.
+- Frontend never reads Redis directly — the backend stays the gatekeeper. No new DB query (reuses `list_agents`); no migration.
 
 - Backend is the only gatekeeper.
 - Simulator talks only to the backend over REST.
@@ -111,6 +115,20 @@ docker compose exec postgres psql -U fleetops -d fleetops -c "SELECT * FROM tele
 
 docker compose exec redis redis-cli GET "agent:1:state"
   → {"agent_id": 1, "lat": 32.0853, ..., "status": "en-route", "recorded_at": "..."}
+
+# Current-state API route ordering (literal path before the int param)
+python -c "from app.main import app; [print(sorted(r.methods), r.path) for r in app.routes if getattr(r,'path','').startswith('/api')]"
+  → /api/agents/current-state listed BEFORE /api/agents/{agent_id}
+
+# Current-state API (postgres + redis up) — verified live in Postman
+# GET http://localhost:8000/api/agents/current-state
+#   → 200 OK, list of agents
+#   → agent that has reported telemetry: populated "latest_state"
+#   → agent with no telemetry yet: "latest_state": null  (included, not skipped)
+
+# Cross-check the cache matches the API for an agent with telemetry
+docker compose exec redis redis-cli GET "agent:1:state"
+  → matches the latest_state returned by GET /api/agents/current-state for id 1
 ```
 
 Notes:
@@ -126,7 +144,8 @@ Notes:
 - Redis is used for latest-state writes on telemetry ingestion, but no pub/sub, rate limiting, refresh-token store, presence, or offline detection yet.
 - `/health` does not yet report DB/Redis status (still returns only `{"status": "ok"}`).
 - Agent API is create/list/get only — **no update or delete**, no pagination, and `status` remains free-form (no enum/constraint).
-- No current-state / telemetry-history read APIs yet.
+- Current-state API does one Redis `GET` per agent (no `MGET`/pipelining yet); no pagination.
+- No telemetry-history read API yet.
 - No User, Alert, or Command models yet.
 - Telemetry is a single simple table; no partitioning or retention yet (deferred scalability work).
 - No WebSocket/Socket.IO implementation.
@@ -142,7 +161,7 @@ Notes:
 
 The next checkpoint will be chosen before implementation — candidates:
 
-- Current-state read API (list agents with latest state from Redis), or
-- Telemetry history read API (for charts).
+- Telemetry history read API (for charts), or
+- WebSocket contract + live push (define `docs/ws-protocol.md` first).
 
 Do not decide broadly here; the specific next checkpoint will be selected at the start of the next step.
