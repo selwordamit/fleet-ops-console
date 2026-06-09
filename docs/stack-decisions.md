@@ -38,7 +38,7 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** Relational integrity for users/agents/commands plus append-heavy telemetry that can later use native partitioning and retention.
 - **Alternatives considered:** MySQL; a dedicated time-series DB (e.g. Timescale) — deferred as a possible later step.
 - **Tradeoff / cost:** Telemetry volume will eventually need partitioning/retention work.
-- **Status:** implemented (Docker Postgres running and reachable; no business tables yet).
+- **Status:** implemented. `agents` and `telemetry` tables exist and persist data. Telemetry is a single simple table for the MVP; native partitioning + retention are deferred and documented as a future scalability improvement.
 
 ## ORM & migrations — SQLAlchemy async + Alembic
 
@@ -46,7 +46,7 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** ORM/session structure matches a layered backend; Alembic gives versioned, reviewable schema changes and a reproducible DB.
 - **Alternatives considered:** Raw asyncpg (no ORM/migrations), sync SQLAlchemy, Tortoise/SQLModel.
 - **Tradeoff / cost:** Async sessions and the async Alembic `env.py` are more complex than their sync equivalents.
-- **Status:** implemented (async engine/session foundation + Alembic infrastructure; no real migrations yet).
+- **Status:** implemented (async engine/session + Alembic infrastructure; real migrations applied for the `agents` and `telemetry` tables).
 
 ## Cache / pub-sub — Redis
 
@@ -54,7 +54,7 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** Fast ephemeral state and cross-worker pub/sub keep the map responsive without scanning telemetry history; clearly separated from Postgres's durable role.
 - **Alternatives considered:** In-memory process state (does not scale across workers), Postgres LISTEN/NOTIFY.
 - **Tradeoff / cost:** Another service to run; must keep cache/durable responsibilities distinct.
-- **Status:** partial — connectivity implemented (async client + `check_redis_connection()`); latest-state cache, pub/sub, rate limiting, refresh-token store, presence, and offline detection still planned.
+- **Status:** partial — connectivity implemented (async client + `check_redis_connection()`) and Redis is now used for **real latest-state writes** on telemetry ingestion (`agent:{id}:state`). Still planned: pub/sub fan-out, rate limiting, refresh-token store, presence, and offline detection.
 
 ## Auth — JWT access/refresh + RBAC
 
