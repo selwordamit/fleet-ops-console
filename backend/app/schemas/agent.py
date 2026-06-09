@@ -2,17 +2,22 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.enums import AgentStatus
+
 
 class AgentCreate(BaseModel):
     """Incoming payload to register a new agent.
 
-    Fields are free-form strings for now (no enums yet); validation only enforces
-    non-empty values within the column lengths defined on the Agent model.
+    `name`/`type` stay free-form strings; `status` is constrained to AgentStatus.
+    `use_enum_values=True` stores the validated value as the plain string, so the
+    service persists a clean string to Postgres and responses serialize cleanly.
     """
+
+    model_config = ConfigDict(use_enum_values=True)
 
     name: str = Field(min_length=1, max_length=100)
     type: str = Field(min_length=1, max_length=50)
-    status: str = Field(min_length=1, max_length=20)
+    status: AgentStatus
 
 
 class AgentRead(BaseModel):

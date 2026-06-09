@@ -6,7 +6,7 @@ This file is the current working state of the project. Update it after each mean
 
 ## Current Phase
 
-Step 4 — Current-state APIs. Ingestion (`POST /api/agents/{agent_id}/telemetry`) persists history to Postgres and updates Redis latest state, the minimal Agent API (create/list/get) registers agents through backend REST, and `GET /api/agents/current-state` now reads agents from Postgres and their latest state from Redis so clients never touch the cache directly. Still pending in this area: telemetry-history read API and `/health` connectivity reporting.
+Step 4 — Current-state APIs. Ingestion (`POST /api/agents/{agent_id}/telemetry`) persists history to Postgres and updates Redis latest state, the minimal Agent API (create/list/get) registers agents through backend REST, and `GET /api/agents/current-state` now reads agents from Postgres and their latest state from Redis so clients never touch the cache directly. API-level status enum validation now restricts `AgentCreate.status` and `TelemetryCreate.status` to the allowed values before the simulator is built. Still pending in this area: telemetry-history read API and `/health` connectivity reporting.
 
 ---
 
@@ -59,6 +59,17 @@ Step 4 — Current-state APIs. Ingestion (`POST /api/agents/{agent_id}/telemetry
 - `GET /api/agents/current-state`: returns `200` with the list. Declared **before** `/api/agents/{agent_id}` so the literal path is not captured by the int path parameter.
 - Frontend never reads Redis directly — the backend stays the gatekeeper. No new DB query (reuses `list_agents`); no migration.
 
+### Step 4 — API-level status enum validation ✓
+
+- Shared `AgentStatus(str, Enum)` (`app/schemas/enums.py`) with the allowed values `idle`, `en-route`, `stopped`, `offline`. The `en_route` member keeps a valid Python identifier while its value stays the hyphenated `"en-route"`.
+- `AgentCreate.status` and `TelemetryCreate.status` are now typed as `AgentStatus` (was free-form `str`). Invalid statuses are rejected at the API boundary with `422`.
+- Request models use `use_enum_values=True`, so the validated `status` is a plain string — persistence to Postgres/Redis and response serialization stay clean (response schemas remain `str`).
+- API-layer validation only: the SQLAlchemy `String` columns are unchanged. No migration, no PostgreSQL enum, no DB `CheckConstraint`.
+
+---
+
+## Key Decisions
+
 - Backend is the only gatekeeper.
 - Simulator talks only to the backend over REST.
 - PostgreSQL stores durable historical/audit data.
@@ -67,7 +78,7 @@ Step 4 — Current-state APIs. Ingestion (`POST /api/agents/{agent_id}/telemetry
 - Auth/RBAC are part of the final system but will be implemented only after the core flow is proven.
 - `pydantic-settings` used for typed config from the start; `.env.example` seeds later-phase vars.
 - Alembic reads the DB URL from `settings.database_url` (one source of truth); migrations run on the async engine.
-- First `Agent` model uses an integer surrogate PK and free-form string `status` (no enum/constraint yet); validation deferred to Pydantic/services.
+- First `Agent` model uses an integer surrogate PK; the `status` DB column stays a plain `String` (no PostgreSQL enum / CheckConstraint), while allowed values are enforced at the API layer by the shared `AgentStatus` Pydantic enum.
 - `alembic.ini` kept ASCII-only with no inline comments (Alembic reads it with the OS locale encoding; configparser does not strip inline comments).
 - Telemetry ingestion: Postgres commit happens before the Redis latest-state write (Postgres is source of truth; a cache hiccup must not lose a stored report). The service owns the transaction boundary; repositories only add/flush. `recorded_at` is server-set for v1.
 
@@ -129,6 +140,21 @@ python -c "from app.main import app; [print(sorted(r.methods), r.path) for r in 
 # Cross-check the cache matches the API for an agent with telemetry
 docker compose exec redis redis-cli GET "agent:1:state"
   → matches the latest_state returned by GET /api/agents/current-state for id 1
+
+# Status enum validation
+python -m pytest tests/ -q
+  → 42 passed
+
+# valid statuses accepted: idle, en-route, stopped, offline
+# POST http://localhost:8000/api/agents  { "name": "Truck 1", "type": "truck", "status": "en-route" }
+#   → 201 Created
+# invalid status rejected
+# POST http://localhost:8000/api/agents  { "name": "Truck 1", "type": "truck", "status": "moving" }
+#   → 422 Unprocessable Entity (enum validation error)
+# same enforcement on telemetry: POST .../telemetry with "status": "active" → 422
+
+python -c "from app.schemas.agent import AgentCreate; a=AgentCreate(name='T1',type='truck',status='en-route'); print(repr(a.status), type(a.status) is str)"
+  → 'en-route' True   (validated status is a plain string for clean persistence/serialization)
 ```
 
 Notes:
@@ -143,7 +169,8 @@ Notes:
 
 - Redis is used for latest-state writes on telemetry ingestion, but no pub/sub, rate limiting, refresh-token store, presence, or offline detection yet.
 - `/health` does not yet report DB/Redis status (still returns only `{"status": "ok"}`).
-- Agent API is create/list/get only — **no update or delete**, no pagination, and `status` remains free-form (no enum/constraint).
+- Agent API is create/list/get only — **no update or delete**, no pagination.
+- `status` is validated against the shared `AgentStatus` enum at the API layer, but the DB column is still a plain `String` — direct SQL or any future non-validated path could still write an invalid status until a DB-level enum/CheckConstraint is added.
 - Current-state API does one Redis `GET` per agent (no `MGET`/pipelining yet); no pagination.
 - No telemetry-history read API yet.
 - No User, Alert, or Command models yet.

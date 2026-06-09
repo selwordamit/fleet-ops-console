@@ -207,3 +207,18 @@ Tradeoff: The implementation does one Redis `GET` per agent in a sequential loop
 
 Verification: `python -m pytest tests/ -q` → 21 passed; route listing confirmed `/api/agents/current-state` is registered before `/api/agents/{agent_id}`; Postman `GET /api/agents/current-state` → `200` returning both a populated `latest_state` (agent with telemetry) and `latest_state: null` (agent without); `redis-cli GET agent:{id}:state` matched the `latest_state` returned by the API.
 
+---
+
+## 2026-06-09 | Status enum validation at the API layer
+
+Context: Before building the simulator (and any other client), we wanted to stop inconsistent status strings — typos, casing, `en_route` vs `en-route` — from entering the system. The allowed values are `idle`, `en-route`, `stopped`, `offline`.
+
+Decision: Add a shared `str`-based Python/Pydantic enum (`AgentStatus`) and use it for `AgentCreate.status` and `TelemetryCreate.status`, with `use_enum_values=True` so the validated value is the plain string. Validation lives at the API boundary only; the SQLAlchemy `String` columns are unchanged.
+
+Alternatives: Keep free-form strings (status quo, no guard); add a PostgreSQL enum type now; add a DB `CheckConstraint` now. The latter two enforce at the database but require a migration and lock the value set into the schema this early.
+
+Reason: A shared API-layer enum prevents inconsistent simulator/client input immediately while keeping the checkpoint small — no migration, no schema change, and the value set stays easy to evolve. The `str` base + `use_enum_values=True` keeps persistence and response serialization as plain strings, so nothing downstream has to know about the enum.
+
+Tradeoff: Enforcement holds only for traffic through the Pydantic schemas — direct SQL or any future non-validated code path could still write an invalid status until a DB-level enum/CheckConstraint is added. Matching is also case-sensitive and exact.
+
+Verification: `python -m pytest tests/ -q` → 42 passed; valid statuses (`idle`, `en-route`, `stopped`, `offline`) accepted on both `POST /api/agents` and telemetry ingestion; invalid statuses (e.g. `moving`, `active`, `EN-ROUTE`) rejected with `422`; `AgentCreate(...).status` confirmed to be a plain `str` (`'en-route'`) after validation.
