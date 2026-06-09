@@ -154,3 +154,40 @@ Tradeoff: A module-level client is simple but will need a proper FastAPI startup
 
 Verification: `python -m pytest tests/ -q` passed (12) and a live Redis PING via `check_redis_connection()` returned `True`.
 
+---
+
+## 2026-06-07 | Telemetry ingestion flow: Postgres-first, service-owned transaction
+
+Context: First backend core flow — `POST /api/agents/{agent_id}/telemetry` must persist durable history and update fast latest-state, with thin routes and DB access kept out of handlers.
+
+Decision:
+
+1. Commit telemetry to Postgres **before** writing latest state to Redis.
+2. The **service** owns the transaction boundary (calls `commit`); repositories only add/flush and run queries.
+3. `recorded_at` is **server-set** for v1 (DB `server_default now()`); no client-supplied timestamp.
+4. The **Agent API is deferred**, so agents are seeded manually via SQL for verification.
+
+Alternatives: Redis-first or a single coupled write (risks losing durable data on cache success/DB failure); committing inside repositories (spreads transaction control); requiring a client `recorded_at`; building the Agent API now.
+
+Reason: Postgres is the source of truth, so a Redis hiccup must never roll back a stored report. A service-owned transaction keeps repositories single-purpose and the route thin. Server-set `recorded_at` is the simplest correct default for the MVP. Deferring the Agent API keeps this checkpoint small and focused on the ingestion flow.
+
+Tradeoff: If the Redis write fails after commit, the cache is briefly stale relative to Postgres (acceptable; latest state is reconstructable). Manual SQL seeding is a temporary verification crutch until the Agent API exists. Server-set `recorded_at` can't represent a device reporting an older clock yet.
+
+Verification: `python -m pytest tests/ -q` → 21 passed; `alembic current` → `c258a9ed31eb (head)`; live `POST` returned `201`; `SELECT * FROM telemetry` showed the persisted row; `GET agent:1:state` in Redis showed the latest state; unknown agent → `404`, invalid payload → `422`.
+
+---
+
+## 2026-06-09 | Minimal Agent API: create/list/get only
+
+Context: Telemetry ingestion worked end-to-end, but agents still had to be seeded manually through SQL, which blocked the simulator (and any backend-REST-only client) from registering agents. We needed a way to create and read agents through the backend without expanding scope.
+
+Decision: Add only three endpoints — `POST /api/agents`, `GET /api/agents`, `GET /api/agents/{agent_id}` — reusing the existing `agents` table and `Agent` model (no new migration). Same layering as ingestion: thin route → service (owns the commit) → repository (DB access). No update/delete.
+
+Alternatives: Keep manual SQL seeding; build full Agent CRUD (update/delete, pagination, filtering) now; defer the Agent API until the simulator step and seed via SQL until then.
+
+Reason: Create/list/get is the minimum needed to unblock the simulator's "talks only to the backend over REST" constraint while keeping the checkpoint small and verifiable. Full CRUD and pagination are unproven needs at this stage; manual SQL seeding doesn't satisfy the REST-only rule.
+
+Tradeoff: No update/delete, no pagination on the list endpoint, no auth/RBAC yet (creation is currently open), and `status` remains a free-form string (no enum/constraint). These are deliberate deferrals to later phases.
+
+Verification: Postman `POST /api/agents` → `201` with the persisted agent; `GET /api/agents` → `200` list; `GET /api/agents/{id}` → `200` single agent; `GET /api/agents/{missing_id}` → `404`; `SELECT id, name, type, status FROM agents` confirmed the created agents are persisted in Postgres.
+
