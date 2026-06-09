@@ -191,3 +191,19 @@ Tradeoff: No update/delete, no pagination on the list endpoint, no auth/RBAC yet
 
 Verification: Postman `POST /api/agents` → `201` with the persisted agent; `GET /api/agents` → `200` list; `GET /api/agents/{id}` → `200` single agent; `GET /api/agents/{missing_id}` → `404`; `SELECT id, name, type, status FROM agents` confirmed the created agents are persisted in Postgres.
 
+---
+
+## 2026-06-09 | Current-state API: Postgres for identity, Redis for latest state
+
+Context: Telemetry ingestion already wrote each agent's latest state to Redis under `agent:{id}:state`, but there was no backend REST endpoint for clients to read it. The frontend must never read Redis directly — the backend is the gatekeeper.
+
+Decision: Add `GET /api/agents/current-state`, which lists agents from Postgres and, for each, reads its latest state from Redis via a dedicated cache accessor (`read_agent_state`, reusing `agent_state_key`). Agents with no cached state are returned with `latest_state: null`. The Redis read lives in the cache layer; the service orchestrates DB + cache; the route stays thin. The literal route is declared before `/api/agents/{agent_id}` so it is not captured by the int path parameter.
+
+Alternatives: Let the frontend read Redis directly (breaks the gatekeeper rule); reconstruct latest state by querying the newest telemetry row per agent from Postgres (slower, defeats the purpose of the cache); skip agents that have no Redis state (hides registered-but-silent agents); fail the whole request on a cache miss (one silent agent would break the live view).
+
+Reason: The backend stays the single gatekeeper, Redis keeps latest-state reads fast, and registered agents remain visible even before they report telemetry — which is exactly the state operators need to see on the live view.
+
+Tradeoff: The implementation does one Redis `GET` per agent in a sequential loop; for larger fleets this should move to `MGET`/pipelining. No pagination yet. The response also carries both the agent's stored `status` (Postgres) and the last-reported `latest_state.status` (Redis), which can legitimately differ and must not be conflated by consumers.
+
+Verification: `python -m pytest tests/ -q` → 21 passed; route listing confirmed `/api/agents/current-state` is registered before `/api/agents/{agent_id}`; Postman `GET /api/agents/current-state` → `200` returning both a populated `latest_state` (agent with telemetry) and `latest_state: null` (agent without); `redis-cli GET agent:{id}:state` matched the `latest_state` returned by the API.
+

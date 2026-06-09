@@ -1,8 +1,9 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cache.agent_state import read_agent_state
 from app.models.agent import Agent
 from app.repositories.agent import get_agent, insert_agent, list_agents
-from app.schemas.agent import AgentCreate
+from app.schemas.agent import AgentCreate, AgentCurrentState, AgentLatestState
 
 
 class AgentNotFoundError(Exception):
@@ -30,3 +31,25 @@ async def get_agent_by_id(session: AsyncSession, agent_id: int) -> Agent:
     if agent is None:
         raise AgentNotFoundError(agent_id)
     return agent
+
+
+async def get_current_state(session: AsyncSession) -> list[AgentCurrentState]:
+    # Postgres is the source of truth for which agents exist; Redis holds the
+    # latest reported state. An agent with no cached state is included with a null
+    # latest_state rather than being skipped or failing the whole request.
+    agents = await list_agents(session)
+    result: list[AgentCurrentState] = []
+    for agent in agents:
+        raw = await read_agent_state(agent.id)
+        latest = AgentLatestState(**raw) if raw is not None else None
+        result.append(
+            AgentCurrentState(
+                id=agent.id,
+                name=agent.name,
+                type=agent.type,
+                status=agent.status,
+                last_seen=agent.last_seen,
+                latest_state=latest,
+            )
+        )
+    return result
