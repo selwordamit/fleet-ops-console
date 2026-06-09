@@ -222,3 +222,22 @@ Reason: A shared API-layer enum prevents inconsistent simulator/client input imm
 Tradeoff: Enforcement holds only for traffic through the Pydantic schemas — direct SQL or any future non-validated code path could still write an invalid status until a DB-level enum/CheckConstraint is added. Matching is also case-sensitive and exact.
 
 Verification: `python -m pytest tests/ -q` → 42 passed; valid statuses (`idle`, `en-route`, `stopped`, `offline`) accepted on both `POST /api/agents` and telemetry ingestion; invalid statuses (e.g. `moving`, `active`, `EN-ROUTE`) rejected with `422`; `AgentCreate(...).status` confirmed to be a plain `str` (`'en-route'`) after validation.
+
+---
+
+## 2026-06-09 | REST-only configurable simulator with two controlled placement modes
+
+Context: With the Agent API, telemetry ingestion, the current-state API, and status enum validation all proven, we needed a way to generate controlled, realistic-looking data through the backend — to populate the map, exercise ingestion under load, and drive stable demos — without hand-seeding agents.
+
+Decision: Build a standalone Python simulator that talks **only** to the backend REST API (`POST /api/agents`, `POST /api/agents/{id}/telemetry`) and is configured entirely from environment variables. It supports two **controlled** placement modes:
+
+- `local_cluster` — a deterministic spread of `AGENT_COUNT` agents within `SPREAD_RADIUS_KM` of a configurable base point, for clustering/load-style tests.
+- `fixed_points` — exact agent locations loaded from a scenario JSON file, for stable, repeatable demos.
+
+Alternatives: Uncontrolled random placement scattered across Israel (unpredictable, hard to demo); hardcoded fixed vehicles only (not scalable to arbitrary counts); generating fake data inside the backend (blurs the device boundary); the simulator writing directly to Postgres/Redis (bypasses validation and breaks the gatekeeper rule).
+
+Reason: Keeping the simulator behind backend REST preserves the "backend is the only gatekeeper" rule and forces the same validation a real device would hit. Two controlled modes make runs predictable: `local_cluster` covers the team-lead requirement to pick an arbitrary agent count (7, 15, 100, 214, eventually 1000) and test clustering/load, while `fixed_points` gives exact, repeatable demo locations. Env-var configuration means behavior changes without code changes.
+
+Tradeoff: Sends are sequential and synchronous (one HTTP request per agent per tick) — simple and easy to reason about, but high counts may need larger intervals or future async/batched sending. Repeated runs create **new** agents because reuse/upsert/reset is not implemented yet, so dev cleanup is manual. Movement is a controlled random walk, not real route/road simulation. No Dockerfile/Compose wiring and no command/ACK support yet.
+
+Verification: `SIMULATION_MODE=local_cluster AGENT_COUNT=3 python -m simulator.app.main` registered 3 agents through the backend API; telemetry persisted as growing rows in Postgres `telemetry`; Redis `agent:{id}:state` keys updated per tick; `GET /api/agents/current-state` returned the simulator agents with populated `latest_state`.

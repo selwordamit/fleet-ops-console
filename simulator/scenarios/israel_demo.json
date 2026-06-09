@@ -1,0 +1,7 @@
+[
+  { "name": "demo-tlv-1", "type": "truck", "status": "en-route", "lat": 32.0853, "lng": 34.7818 },
+  { "name": "demo-tlv-2", "type": "van", "status": "idle", "lat": 32.0700, "lng": 34.7900 },
+  { "name": "demo-jerusalem-1", "type": "truck", "status": "stopped", "lat": 31.7683, "lng": 35.2137 },
+  { "name": "demo-haifa-1", "type": "van", "status": "en-route", "lat": 32.7940, "lng": 34.9896 },
+  { "name": "demo-beersheva-1", "type": "scooter", "status": "offline", "lat": 31.2520, "lng": 34.7915 }
+]

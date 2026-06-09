@@ -110,7 +110,7 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** Behaves like external hardware and enforces the "backend is the only gatekeeper" rule — it never touches Postgres or Redis directly.
 - **Alternatives considered:** Generating fake data inside the backend (blurs the device boundary), direct DB seeding (bypasses validation).
 - **Tradeoff / cost:** One more service to run and configure (agent count, update rate).
-- **Status:** planned.
+- **Status:** partial — simulator **behavior is implemented and verified locally**. It registers agents and POSTs telemetry through backend REST only (never Postgres/Redis), with configurable agent count and two controlled placement modes (`local_cluster`, `fixed_points`) selected via environment variables. Run with `python -m simulator.app.main` (see `docs/simulator-usage.md`). Not yet implemented: a `Dockerfile`/Compose wiring for the simulator; command/ACK behavior; agent reuse/upsert/reset; async/batched sending for high agent counts.
 
 ## Infra — Docker + Docker Compose
 
@@ -124,5 +124,6 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 
 ## Current Status Summary
 
-- **Implemented:** FastAPI base app, `/health` endpoint, typed settings, `DATABASE_URL`, Docker Postgres, SQLAlchemy async session foundation, Alembic infrastructure, first `Agent` model + migration, Redis connectivity (`REDIS_URL`, async client, `check_redis_connection()`).
-- **Planned / not yet implemented:** Redis usage beyond connectivity (latest-state cache, pub/sub, rate limiting, refresh-token store, presence, offline detection), Socket.IO, JWT/RBAC, passlib/bcrypt, frontend (React/Vite/Leaflet/TanStack/Zustand/shadcn/Recharts), simulator behavior, telemetry/alert/command models, alerts, commands.
+- **Implemented:** FastAPI base app, `/health` endpoint, typed settings, `DATABASE_URL`, Docker Postgres, SQLAlchemy async session foundation, Alembic infrastructure, `Agent` + `Telemetry` models + migrations, telemetry ingestion + Redis latest-state cache, Agent API (create/list/get), current-state API, API-layer status enum validation, and the basic configurable REST-only simulator (`local_cluster` + `fixed_points`, configurable agent count) run locally.
+- **Partial:** Redis (latest-state writes done; pub/sub, rate limiting, refresh-token store, presence, offline detection planned); Docker Compose (Postgres up; backend/frontend/simulator services not yet wired); simulator (behavior done; Dockerfile/Compose, command/ACK, reuse/reset, async/batched sends planned).
+- **Planned / not yet implemented:** Socket.IO, JWT/RBAC, passlib/bcrypt, frontend (React/Vite/Leaflet/TanStack/Zustand/shadcn/Recharts), alert/command models, alerts, commands, offline detection.
