@@ -6,7 +6,7 @@ This file is the current working state of the project. Update it after each mean
 
 ## Current Phase
 
-Backend REST core + basic simulator verified. The simulator checkpoint was implemented before frontend/WebSocket to verify Simulator → Backend communication early — so this does **not** mean every original build-order step before Step 8 is complete (frontend, WebSocket, alerts, commands, auth/RBAC are all still not implemented; see *Known Issues / Not Implemented Yet*).
+Backend REST core + basic simulator verified, and **backend + simulator are now Dockerized and wired into Compose** alongside Postgres and Redis (`docker compose up --build` runs `postgres + redis + backend + simulator`; the frontend service is deferred behind a `frontend` profile and not built). The simulator checkpoint was implemented before frontend/WebSocket to verify Simulator → Backend communication early — so this does **not** mean every original build-order step before Step 8 is complete (frontend, WebSocket, alerts, commands, auth/RBAC are all still not implemented; see *Known Issues / Not Implemented Yet*).
 
 The backend REST core that the simulator exercises: ingestion (`POST /api/agents/{agent_id}/telemetry`) persists history to Postgres and updates Redis latest state, the minimal Agent API (create/list/get) registers agents through backend REST, and `GET /api/agents/current-state` reads agents from Postgres and their latest state from Redis so clients never touch the cache directly. API-level status enum validation restricts `AgentCreate.status` and `TelemetryCreate.status` to the allowed values.
 
@@ -83,6 +83,15 @@ Still pending in the backend API area: telemetry-history read API and `/health` 
   - Placement is always controlled/configurable — never uncontrolled random placement across Israel.
 - `Simulator` engine (`simulator.py`) registers agents, then runs a telemetry loop that, per tick, advances each agent with a small controlled random-walk step, drains battery, and reports a weighted status (`idle`/`en-route`/`stopped`/`offline`, speed only when `en-route`). Stopped cleanly with Ctrl+C.
 - Run with `python -m simulator.app.main`. Verified end-to-end with 3 agents.
+
+### Dockerize backend + simulator ✓
+
+- `backend/Dockerfile` (`python:3.12-slim`): installs `requirements.txt`, copies `app/` + `alembic/` + `alembic.ini`; on startup runs `alembic upgrade head` then `uvicorn app.main:app --host 0.0.0.0 --port 8000`. Reads `DATABASE_URL`/`REDIS_URL` from the environment.
+- `simulator/Dockerfile` (`python:3.12-slim`): installs `requests`, copies the package to `/sim/simulator`, runs `python -m simulator.app.main`. Still REST-only — no Postgres/Redis access.
+- `docker-compose.yml` wires `backend` and `simulator` with in-network hostnames: backend → `postgres:5432` / `redis:6379`; simulator → `BACKEND_URL=http://backend:8000`. Backend exposes `:8000` to the host.
+- Health checks gate startup order: `postgres`/`redis` expose health checks; backend `depends_on` them `service_healthy`; simulator `depends_on` backend `service_healthy` (`/health` 200).
+- `frontend` service moved behind a `frontend` Compose **profile** so plain `docker compose up --build` does not try to build the (non-existent) frontend image.
+- No backend/simulator business-logic, model, or migration changes. Verified with `docker compose config --quiet`.
 
 ---
 
@@ -217,16 +226,15 @@ Notes:
 - No User, Alert, or Command models yet.
 - Telemetry is a single simple table; no partitioning or retention yet (deferred scalability work).
 - No WebSocket/Socket.IO implementation.
-- No frontend UI.
+- No frontend UI, and **no frontend Dockerfile** — the `frontend` Compose service is deferred behind a `frontend` profile so it is not built.
 - No alerts or commands (no command creation, no ACK flow).
 - No auth/JWT/RBAC.
 - No offline detection.
 
 ### Simulator — implemented, with known deferrals
 
-The basic simulator works and is verified, but the following are intentionally not implemented yet:
+The basic simulator works and is verified, and it is now Dockerized and wired into Compose. The following are intentionally not implemented yet:
 
-- No `Dockerfile` / Compose wiring for the simulator — it is run locally via `python -m simulator.app.main`.
 - No WebSocket — the simulator only uses REST; it does not consume live events.
 - No command/ACK support — the simulator cannot yet receive or acknowledge commands.
 - No simulator-side auth/RBAC (matches the still-unprotected backend routes).
