@@ -3,22 +3,45 @@ services:
     build: ./backend
     ports:
       - "8000:8000"
-    # environment and volumes wired in Phase 02
+    environment:
+      # In-container hostnames: the backend reaches Postgres/Redis by service name.
+      DATABASE_URL: postgresql+asyncpg://fleetops:fleetops@postgres:5432/fleetops
+      REDIS_URL: redis://redis:6379/0
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Backend is "healthy" once /health responds 200. Used by the simulator's depends_on.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
 
+  simulator:
+    build: ./simulator
+    environment:
+      # Simulator talks ONLY to the backend over REST (service name, not localhost).
+      BACKEND_URL: http://backend:8000
+      # Sensible defaults for a containerized run; override as needed.
+      SIMULATION_MODE: local_cluster
+      AGENT_COUNT: "3"
+      TELEMETRY_INTERVAL_SECONDS: "2"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # Frontend is not implemented yet. It lives behind the "frontend" profile so plain
+  # `docker compose up` does NOT try to build a non-existent frontend image.
+  # Enable later with: docker compose --profile frontend up
   frontend:
     build: ./frontend
     ports:
       - "5173:5173"
-    # configured in Phase 06
-
-  simulator:
-    build: ./simulator
-    # configured in Phase 08
-    depends_on:
-      - backend
+    profiles:
+      - frontend
 
   postgres:
     image: postgres:16-alpine
@@ -30,11 +53,23 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fleetops -d fleetops"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
 
 volumes:
   postgres_data:

@@ -110,7 +110,7 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** Behaves like external hardware and enforces the "backend is the only gatekeeper" rule — it never touches Postgres or Redis directly.
 - **Alternatives considered:** Generating fake data inside the backend (blurs the device boundary), direct DB seeding (bypasses validation).
 - **Tradeoff / cost:** One more service to run and configure (agent count, update rate).
-- **Status:** partial — simulator **behavior is implemented and verified locally**. It registers agents and POSTs telemetry through backend REST only (never Postgres/Redis), with configurable agent count and two controlled placement modes (`local_cluster`, `fixed_points`) selected via environment variables. Run with `python -m simulator.app.main` (see `docs/simulator-usage.md`). Not yet implemented: a `Dockerfile`/Compose wiring for the simulator; command/ACK behavior; agent reuse/upsert/reset; async/batched sending for high agent counts.
+- **Status:** partial — simulator **behavior is implemented and verified locally**, and it is now **Dockerized and wired into Compose** (`simulator/Dockerfile`, `BACKEND_URL=http://backend:8000`). It registers agents and POSTs telemetry through backend REST only (never Postgres/Redis), with configurable agent count and two controlled placement modes (`local_cluster`, `fixed_points`) selected via environment variables. Run on the host with `python -m simulator.app.main`, or as a container via `docker compose up --build` (see `docs/simulator-usage.md`). Not yet implemented: command/ACK behavior; agent reuse/upsert/reset; async/batched sending for high agent counts.
 
 ## Infra — Docker + Docker Compose
 
@@ -118,12 +118,12 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** Reproducible, per-project environment; the spec targets `docker compose up`.
 - **Alternatives considered:** Locally installed services, Kubernetes (overkill at this stage).
 - **Tradeoff / cost:** Requires Docker and port management (we hit and resolved a local Postgres conflict on 5432).
-- **Status:** partial — Compose defined and Postgres running; backend, frontend, and simulator services not yet fully wired.
+- **Status:** partial — **backend and simulator are now Dockerized and wired** into Compose alongside Postgres and Redis. `docker compose up --build` brings up `postgres + redis + backend + simulator`; the backend applies migrations on startup and exposes `:8000`, and the simulator reaches it at `http://backend:8000`. Health checks gate startup order (backend waits for DB/Redis; simulator waits for backend `/health`). The **frontend** service is **not** built — it sits behind a `frontend` compose profile because no frontend exists yet.
 
 ---
 
 ## Current Status Summary
 
 - **Implemented:** FastAPI base app, `/health` endpoint, typed settings, `DATABASE_URL`, Docker Postgres, SQLAlchemy async session foundation, Alembic infrastructure, `Agent` + `Telemetry` models + migrations, telemetry ingestion + Redis latest-state cache, Agent API (create/list/get), current-state API, API-layer status enum validation, and the basic configurable REST-only simulator (`local_cluster` + `fixed_points`, configurable agent count) run locally.
-- **Partial:** Redis (latest-state writes done; pub/sub, rate limiting, refresh-token store, presence, offline detection planned); Docker Compose (Postgres up; backend/frontend/simulator services not yet wired); simulator (behavior done; Dockerfile/Compose, command/ACK, reuse/reset, async/batched sends planned).
+- **Partial:** Redis (latest-state writes done; pub/sub, rate limiting, refresh-token store, presence, offline detection planned); Docker Compose (Postgres, Redis, backend, and simulator wired and runnable via `docker compose up --build`; frontend service deferred behind a profile); simulator (behavior + Dockerization done; command/ACK, reuse/reset, async/batched sends planned).
 - **Planned / not yet implemented:** Socket.IO, JWT/RBAC, passlib/bcrypt, frontend (React/Vite/Leaflet/TanStack/Zustand/shadcn/Recharts), alert/command models, alerts, commands, offline detection.

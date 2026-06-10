@@ -57,7 +57,33 @@ pip install -r simulator/requirements.txt
 
 ---
 
-## Running the simulator
+## Run with Docker Compose (backend + simulator + Postgres + Redis)
+
+The backend and simulator are containerized. Compose brings up Postgres, Redis, the backend (which applies migrations on startup), and the simulator together. The simulator container reaches the backend at `http://backend:8000` and still talks **only** to the backend REST API — never to Postgres or Redis directly.
+
+From the repo root:
+
+```bash
+docker compose up --build
+```
+
+This builds and starts `postgres`, `redis`, `backend`, and `simulator`. The frontend is **not** built (it lives behind the `frontend` compose profile and is not implemented yet). The equivalent explicit form is:
+
+```bash
+docker compose up --build postgres redis backend simulator
+```
+
+Startup ordering is handled by health checks: the backend waits for Postgres and Redis to be healthy, and the simulator waits for the backend's `/health` to return `200` before it starts registering agents.
+
+Container simulator settings are provided in `docker-compose.yml` (`environment:`): `BACKEND_URL=http://backend:8000`, `SIMULATION_MODE=local_cluster`, `AGENT_COUNT=3`, `TELEMETRY_INTERVAL_SECONDS=2`. Change the count/mode there (or with `-e` overrides) and re-run.
+
+Stop everything with `Ctrl+C`, then `docker compose down` (add `-v` to also drop the Postgres volume for a clean slate).
+
+> The sections below describe running the simulator **directly on the host** (without its container), which is still fully supported for quick local iteration.
+
+---
+
+## Running the simulator (on the host)
 
 Always run as a module from the **repo root** so package imports and the default scenario path resolve correctly:
 

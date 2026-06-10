@@ -241,3 +241,25 @@ Reason: Keeping the simulator behind backend REST preserves the "backend is the 
 Tradeoff: Sends are sequential and synchronous (one HTTP request per agent per tick) — simple and easy to reason about, but high counts may need larger intervals or future async/batched sending. Repeated runs create **new** agents because reuse/upsert/reset is not implemented yet, so dev cleanup is manual. Movement is a controlled random walk, not real route/road simulation. No Dockerfile/Compose wiring and no command/ACK support yet.
 
 Verification: `SIMULATION_MODE=local_cluster AGENT_COUNT=3 python -m simulator.app.main` registered 3 agents through the backend API; telemetry persisted as growing rows in Postgres `telemetry`; Redis `agent:{id}:state` keys updated per tick; `GET /api/agents/current-state` returned the simulator agents with populated `latest_state`.
+
+---
+
+## 2026-06-10 | Dockerize backend + simulator; defer frontend behind a Compose profile
+
+Context: Postgres and Redis already ran via Compose, but the backend and simulator were not containerized — the Compose file had placeholder services and a `frontend` service whose `build: ./frontend` would fail because no frontend exists. We wanted backend + simulator to run as containers alongside Postgres/Redis with one command, without building frontend.
+
+Decision:
+
+1. Add `backend/Dockerfile` (`python:3.12-slim`) that installs requirements, copies `app/` + `alembic/`, and on startup runs `alembic upgrade head` then Uvicorn. Migrations run at container start so the schema exists before serving.
+2. Add `simulator/Dockerfile` (`python:3.12-slim`) that runs `python -m simulator.app.main`; the package is copied to `/sim/simulator` so the default scenario path still resolves.
+3. Wire both into `docker-compose.yml` with in-network hostnames: backend gets `DATABASE_URL=...@postgres:5432/...` and `REDIS_URL=redis://redis:6379/0`; simulator gets `BACKEND_URL=http://backend:8000`.
+4. Gate startup with health checks: backend `depends_on` Postgres/Redis `service_healthy`; simulator `depends_on` backend `service_healthy` (backend `/health` returns 200).
+5. Move the unbuilt `frontend` service behind a `frontend` Compose **profile** so plain `docker compose up --build` ignores it.
+
+Alternatives considered: comment out / delete the frontend service (loses the documented placeholder); a single combined image for backend+simulator (breaks the device/service boundary — the simulator must look like an external client); `command:`-only migration step instead of baking it into the image CMD (less portable for plain `docker run`); plain `depends_on` without `condition: service_healthy` (start order without readiness, causing early connection/`/health` failures); an external wait-for-it script (extra dependency vs. native health checks).
+
+Reason: Per-service Dockerfiles keep the simulator a separate REST-only client, preserving the "backend is the only gatekeeper" rule. Running migrations on backend startup makes a fresh `docker compose up` self-bootstrapping. Health-check-gated `depends_on` removes race conditions cheaply with no extra scripts. A Compose profile lets the frontend service stay documented and inert until it actually exists — the smallest safe adjustment that keeps `docker compose up --build` working.
+
+Tradeoff: Running `alembic upgrade head` on every backend start is convenient for dev but is not how migrations should be gated in production (should be a controlled deploy step). Health checks add a short startup delay. `python:3.12-slim` differs from the local interpreter (3.13); acceptable since dependencies ship 3.12 wheels. Frontend is intentionally not built, so `docker compose up --build` covers backend + simulator + datastores only.
+
+Verification: `docker compose config --quiet` validated the wiring. Intended end-to-end check: `docker compose up --build` → backend container becomes healthy on `/health`; simulator logs `Registered 3/3 agents` and per-tick `Telemetry tick: 3/3 sent`; `docker compose exec postgres psql ... SELECT count(*) FROM telemetry` grows; `docker compose exec redis redis-cli KEYS "agent:*:state"` lists keys; `GET http://localhost:8000/api/agents/current-state` shows the simulator agents with populated `latest_state`.
