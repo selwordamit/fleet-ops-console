@@ -78,7 +78,7 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** Component model suits a live dashboard; TypeScript keeps socket/REST payloads typed; Vite gives fast dev/build.
 - **Alternatives considered:** Vue/Svelte; Next.js (SSR not needed for an internal SPA).
 - **Tradeoff / cost:** React app structure and state wiring are the team's responsibility.
-- **Status:** planned.
+- **Status:** partial — **Client REST Dashboard MVP implemented and verified**. A Vite + React + TypeScript app under `frontend/` renders `GET /api/agents/current-state`: typed API client (`api/agents.ts`), shared types (`types/agent.ts`), `App.tsx` as data owner (load + loading/error + summary), and a presentational `AgentsTable.tsx`. Served via `npm run dev` (dev proxy `/api` → `http://localhost:8000`); `npm run build` passes. Not yet: routing, WebSocket wiring, frontend Dockerfile.
 
 ## Map — Leaflet + OpenStreetMap + marker clustering
 
@@ -86,7 +86,7 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** Open-source, no API key, and clustering keeps the map usable with many agents — a core spec requirement.
 - **Alternatives considered:** Mapbox/Google Maps (keys, cost, quotas).
 - **Tradeoff / cost:** Fewer built-in advanced features than commercial SDKs; clustering tuning needed at scale.
-- **Status:** planned.
+- **Status:** planned — the dashboard currently shows a labeled **map placeholder** panel; Leaflet/OpenStreetMap is the next frontend checkpoint and is not installed yet.
 
 ## Frontend state — TanStack Query + Zustand
 
@@ -94,7 +94,7 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** Clear split — cached server state vs. fast-changing live state — matching the spec's REST-vs-realtime data boundary.
 - **Alternatives considered:** Redux (more boilerplate), React Context only (re-render and caching issues).
 - **Tradeoff / cost:** Two state tools to learn and keep in their lanes.
-- **Status:** planned.
+- **Status:** planned — neither is installed yet. The Dashboard MVP intentionally uses a plain `useEffect`/`useState` fetch for the single REST snapshot; TanStack Query (server-state caching/refetch) and Zustand (live Socket.IO state) are deferred until their benefits are needed.
 
 ## UI & charts — shadcn/ui + Recharts
 
@@ -102,7 +102,7 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** shadcn/ui gives accessible, ownable components; Recharts covers live-updating history charts in the detail panel.
 - **Alternatives considered:** Material UI / Ant Design (heavier), Chart.js / visx.
 - **Tradeoff / cost:** shadcn components are copied into the codebase (owned, not versioned as a dependency).
-- **Status:** planned.
+- **Status:** planned — neither is installed yet. The Dashboard MVP uses minimal custom CSS (`frontend/src/App.css`, system fonts) instead of a component library, and has no charts.
 
 ## Simulator — Python service over backend REST only
 
@@ -124,6 +124,6 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 
 ## Current Status Summary
 
-- **Implemented:** FastAPI base app, `/health` endpoint, typed settings, `DATABASE_URL`, Docker Postgres, SQLAlchemy async session foundation, Alembic infrastructure, `Agent` + `Telemetry` models + migrations, telemetry ingestion + Redis latest-state cache, Agent API (create/list/get), current-state API, API-layer status enum validation, and the basic configurable REST-only simulator (`local_cluster` + `fixed_points`, configurable agent count) run locally.
-- **Partial:** Redis (latest-state writes done; pub/sub, rate limiting, refresh-token store, presence, offline detection planned); Docker Compose (Postgres, Redis, backend, and simulator wired and runnable via `docker compose up --build`; frontend service deferred behind a profile); simulator (behavior + Dockerization done; command/ACK, reuse/reset, async/batched sends planned).
-- **Planned / not yet implemented:** Socket.IO, JWT/RBAC, passlib/bcrypt, frontend (React/Vite/Leaflet/TanStack/Zustand/shadcn/Recharts), alert/command models, alerts, commands, offline detection.
+- **Implemented:** FastAPI base app, `/health` endpoint, typed settings, `DATABASE_URL`, Docker Postgres, SQLAlchemy async session foundation, Alembic infrastructure, `Agent` + `Telemetry` models + migrations, telemetry ingestion + Redis latest-state cache, Agent API (create/list/get), current-state API, API-layer status enum validation, the basic configurable REST-only simulator (`local_cluster` + `fixed_points`, configurable agent count) run locally, and the **frontend Client REST Dashboard MVP** (Vite + React + TypeScript rendering `GET /api/agents/current-state` with summary + agents table + map placeholder).
+- **Partial:** Redis (latest-state writes done; pub/sub, rate limiting, refresh-token store, presence, offline detection planned); Docker Compose (Postgres, Redis, backend, and simulator wired and runnable via `docker compose up --build`; frontend service deferred behind a profile); simulator (behavior + Dockerization done; command/ACK, reuse/reset, async/batched sends planned); frontend (REST dashboard done; uses plain `fetch`, no TanStack Query/Zustand, map is a placeholder, no frontend Dockerfile).
+- **Planned / not yet implemented:** Socket.IO, JWT/RBAC, passlib/bcrypt, frontend map (Leaflet) + TanStack Query + Zustand + shadcn/ui + Recharts, frontend Dockerfile, alert/command models, alerts, commands, offline detection.

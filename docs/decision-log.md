@@ -263,3 +263,26 @@ Reason: Per-service Dockerfiles keep the simulator a separate REST-only client, 
 Tradeoff: Running `alembic upgrade head` on every backend start is convenient for dev but is not how migrations should be gated in production (should be a controlled deploy step). Health checks add a short startup delay. `python:3.12-slim` differs from the local interpreter (3.13); acceptable since dependencies ship 3.12 wheels. Frontend is intentionally not built, so `docker compose up --build` covers backend + simulator + datastores only.
 
 Verification: `docker compose config --quiet` validated the wiring. Intended end-to-end check: `docker compose up --build` → backend container becomes healthy on `/health`; simulator logs `Registered 3/3 agents` and per-tick `Telemetry tick: 3/3 sent`; `docker compose exec postgres psql ... SELECT count(*) FROM telemetry` grows; `docker compose exec redis redis-cli KEYS "agent:*:state"` lists keys; `GET http://localhost:8000/api/agents/current-state` shows the simulator agents with populated `latest_state`.
+
+---
+
+## 2026-06-10 | Frontend Client REST Dashboard MVP: plain fetch, local CSS, map placeholder
+
+Context: With the backend current-state API proven, the first frontend was built incrementally (Vite shell → types → API client → render → dashboard layout) to display `GET /api/agents/current-state`. The build order's later frontend tooling (TanStack Query, Zustand, Leaflet, shadcn/ui) was explicitly out of scope for this first REST-only screen.
+
+Decision:
+
+1. Scaffold a minimal Vite + React + TypeScript app under `frontend/`, with a single `tsconfig.json` (no project references) and `build` = `tsc --noEmit && vite build` so no stray compiled config artifacts are emitted.
+2. Use a Vite dev-server proxy (`/api` → `http://localhost:8000`) so the client calls same-origin relative paths — no CORS setup and no absolute backend URL / env var for the MVP.
+3. Fetch with a plain typed client (`api/agents.ts` `getCurrentState()`) called from `App.tsx` via `useEffect`/`useState` — **not** TanStack Query yet.
+4. Keep `App.tsx` as the data owner (load + loading/error + derived summary) and `AgentsTable.tsx` as a pure presentational component; types live in `types/agent.ts` mirroring the backend schema (including `agent.status`, which is kept in the model even though the table no longer renders it).
+5. Put all styling in `frontend/src/App.css` (imported by `App.tsx`) with system fonts only — **no** large inline `const STYLES` string and **no** external Google Fonts.
+6. Render the map area as a labeled placeholder panel; defer Leaflet/OpenStreetMap to a later checkpoint.
+
+Alternatives considered: introduce TanStack Query now (more setup before the wire is even proven; deferred until there is real server-state caching/refetch need); Zustand for the loaded list (unnecessary for a single REST snapshot); absolute backend URL via env var (more config than a dev proxy needs for the MVP); inline `<style>` string or a CSS-in-JS/UI library (rejected — CSS belongs in a stylesheet, kept self-contained); external Google Fonts (adds a third-party network dependency); building the real map now (pulls in Leaflet before the data layer is settled); showing both stored `agent.status` and `latest_state.status` columns (confusing on a REST snapshot — collapsed to one operational `Status` column).
+
+Reason: Each step stayed small and verifiable. A plain `fetch` proves the client→proxy→backend path with the least machinery; TanStack Query/Zustand are deferred until their caching/live-state benefits are actually needed (e.g. when WebSocket arrives). Local CSS with system fonts keeps the project self-contained and the component files focused on structure. A map placeholder reserves the layout slot so the Leaflet checkpoint is a drop-in.
+
+Tradeoff: The manual `useEffect` fetch has no caching, retry, or dedup — and under React `StrictMode` it double-fires in dev (harmless; gone in the production build). There is no refresh/polling, so the screen is a one-shot snapshot until reloaded. The single `Status` column hides the stored `agent.status` (still available in the type for later). No frontend Dockerfile yet; the `frontend` Compose service remains behind a profile.
+
+Verification: `npm run build` (`tsc --noEmit && vite build`) passes; `npm run dev` serves on `:5173`; DevTools Network shows `GET /api/agents/current-state` → 200; the dashboard renders real agents with status badges, agents without a cached snapshot show "No telemetry", the summary counts (total / with / without current state) match, and the map shows the placeholder panel.
