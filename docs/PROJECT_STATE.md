@@ -12,6 +12,8 @@ The backend REST core that the simulator exercises: ingestion (`POST /api/agents
 
 The basic simulator now registers fake agents and POSTs telemetry **only** through the backend REST API (`POST /api/agents`, `POST /api/agents/{id}/telemetry`) — it never touches Postgres or Redis directly. It is configurable via environment variables (mode, agent count, interval, base location, spread, scenario file) and supports two placement modes: `local_cluster` (controlled spread around a base point) and `fixed_points` (exact locations from a scenario JSON file). See `docs/simulator-usage.md` for the run/verify guide.
 
+A **frontend Client REST Dashboard MVP** now exists: a Vite + React + TypeScript app under `frontend/` that renders `GET /api/agents/current-state` as a modern dark dashboard (summary cards + agents table + a map *placeholder*). It uses a Vite dev proxy (`/api` → `http://localhost:8000`) and a plain typed `fetch` client — no TanStack Query, Zustand, Leaflet, WebSocket, or auth yet. This is the **first** frontend step (build-order Steps 6–7, REST portion only); the live/map/realtime pieces remain unimplemented.
+
 Still pending in the backend API area: telemetry-history read API and `/health` connectivity reporting.
 
 ---
@@ -93,6 +95,16 @@ Still pending in the backend API area: telemetry-history read API and `/health` 
 - `frontend` service moved behind a `frontend` Compose **profile** so plain `docker compose up --build` does not try to build the (non-existent) frontend image.
 - No backend/simulator business-logic, model, or migration changes. Verified with `docker compose config --quiet`.
 
+### Frontend — Client REST Dashboard MVP ✓
+
+- Vite + React + TypeScript app scaffolded under `frontend/` (single `tsconfig.json`, `build` = `tsc --noEmit && vite build`; no emitted config artifacts). System fonts only, no UI library.
+- Vite dev proxy: `/api` → `http://localhost:8000`, so the client calls same-origin relative paths (no CORS, no absolute backend URL).
+- Typed contract mirror in `src/types/agent.ts` (`AgentCurrentState`, `AgentLatestState`, `AgentStatus`) matching the backend schema; `agent.status` kept in the type even though the table no longer shows it.
+- REST client `src/api/agents.ts` `getCurrentState()` — `fetch("/api/agents/current-state")`, throws a clear `Error` on non-OK, returns `AgentCurrentState[]`.
+- `src/App.tsx` owns the data lifecycle (load on mount via `useEffect`/`useState`, loading/error branches, derived summary counts) and the dashboard layout. **No TanStack Query** — plain fetch for this single snapshot.
+- `src/features/agents/AgentsTable.tsx` — presentational table (ID, Name, Type, Status, Lat, Lng, Speed, Battery, Recorded At) with status badges and a "No telemetry" state when `latest_state` is null; never calls the backend.
+- `src/App.css` — all styling (control-room dark theme); the map is a labeled **placeholder** panel (Leaflet deferred). Wording avoids "Live" because this is a REST snapshot, not real-time.
+
 ---
 
 ## Key Decisions
@@ -108,6 +120,7 @@ Still pending in the backend API area: telemetry-history read API and `/health` 
 - First `Agent` model uses an integer surrogate PK; the `status` DB column stays a plain `String` (no PostgreSQL enum / CheckConstraint), while allowed values are enforced at the API layer by the shared `AgentStatus` Pydantic enum.
 - `alembic.ini` kept ASCII-only with no inline comments (Alembic reads it with the OS locale encoding; configparser does not strip inline comments).
 - Telemetry ingestion: Postgres commit happens before the Redis latest-state write (Postgres is source of truth; a cache hiccup must not lose a stored report). The service owns the transaction boundary; repositories only add/flush. `recorded_at` is server-set for v1.
+- Frontend: REST/server data is fetched through a typed API client and the backend stays the gatekeeper (client never reads Redis). Styling lives in a dedicated CSS file with system fonts (no inline style strings, no external font CDN, no UI library). TanStack Query/Zustand/Leaflet are deferred until their realtime/caching/map benefits are actually needed.
 
 ---
 
@@ -226,7 +239,7 @@ Notes:
 - No User, Alert, or Command models yet.
 - Telemetry is a single simple table; no partitioning or retention yet (deferred scalability work).
 - No WebSocket/Socket.IO implementation.
-- No frontend UI, and **no frontend Dockerfile** — the `frontend` Compose service is deferred behind a `frontend` profile so it is not built.
+- Frontend exists as the **Client REST Dashboard MVP only**, with deliberate gaps: it uses a plain `useEffect`/`useState` `fetch` (no TanStack Query/Zustand), the map is a **placeholder** (no Leaflet/markers/clustering), there is no refresh/polling (one-shot snapshot until reload), no routing, no auth, and **no frontend Dockerfile** — the `frontend` Compose service is still deferred behind a `frontend` profile so it is not built. Under React `StrictMode` the mount fetch double-fires in dev (harmless; absent in the production build).
 - No alerts or commands (no command creation, no ACK flow).
 - No auth/JWT/RBAC.
 - No offline detection.
@@ -253,7 +266,8 @@ Known simulator tradeoffs:
 
 The next checkpoint will be chosen before implementation — candidates:
 
-- Telemetry history read API (for charts), or
-- WebSocket contract + live push (define `docs/ws-protocol.md` first).
+- Real map: Leaflet + OpenStreetMap + marker clustering, replacing the dashboard's map placeholder (render agents with `latest_state` as markers), or
+- WebSocket contract + live push (define `docs/ws-protocol.md` first) — would also motivate introducing TanStack Query/Zustand on the frontend, or
+- Telemetry history read API (for charts).
 
 Do not decide broadly here; the specific next checkpoint will be selected at the start of the next step.

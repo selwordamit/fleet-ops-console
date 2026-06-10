@@ -1,0 +1,133 @@
+/* Fleet Operations Console dashboard styling.
+   Control-room aesthetic: dark canvas, teal radar accent, system fonts only. */
+
+:root {
+  --bg: #0a0d12;
+  --panel: #11161f;
+  --panel-2: #161d29;
+  --border: #232c3b;
+  --text: #e7eef7;
+  --muted: #8595aa;
+  --accent: #5eead4;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "Menlo", "Consolas", "Liberation Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+
+.foc-shell {
+  min-height: 100vh;
+  padding: 32px clamp(16px, 4vw, 48px);
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(94, 234, 212, 0.10), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(94, 234, 212, 0.05), transparent 55%),
+    var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+.foc-container { max-width: 1240px; margin: 0 auto; }
+
+/* Header */
+.foc-header {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+  padding-bottom: 20px; margin-bottom: 28px;
+  border-bottom: 1px solid var(--border);
+}
+.foc-brand { display: flex; align-items: center; gap: 14px; }
+.foc-logo {
+  width: 14px; height: 14px; border-radius: 4px; background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.15), 0 0 18px rgba(94, 234, 212, 0.6);
+}
+.foc-title { margin: 0; font-size: clamp(22px, 3vw, 30px); font-weight: 800; letter-spacing: -0.02em; }
+.foc-subtitle { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
+
+/* Summary stats */
+.foc-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+.foc-stat {
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px;
+  animation: foc-rise 0.5s ease both;
+}
+.foc-stat:nth-child(2) { animation-delay: 0.06s; }
+.foc-stat:nth-child(3) { animation-delay: 0.12s; }
+.foc-stat__label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); }
+.foc-stat__value { font-family: var(--font-mono); font-size: 34px; font-weight: 600; margin-top: 6px; line-height: 1; }
+.foc-stat__value--accent { color: var(--accent); }
+.foc-stat__value--muted { color: var(--muted); }
+
+/* Main stacked area: map hero on top, full-width table below */
+.foc-main { display: flex; flex-direction: column; gap: 16px; }
+
+.foc-panel {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  overflow: hidden; animation: foc-rise 0.5s ease both; animation-delay: 0.1s;
+}
+/* Map is the visual centerpiece this checkpoint: accent border + soft glow */
+.foc-panel--map {
+  border-color: rgba(94, 234, 212, 0.30);
+  box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.05), 0 18px 50px -28px rgba(94, 234, 212, 0.45);
+}
+.foc-panel__head { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.foc-panel__title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted); font-weight: 700; }
+.foc-panel__count { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+
+/* Agents table */
+.foc-table-wrap { overflow-x: auto; }
+.foc-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.foc-table thead th {
+  text-align: left; padding: 11px 14px; color: var(--muted);
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700;
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+/* Numeric/data columns are centered; text columns keep the left default. */
+.foc-table thead th.foc-th--data { text-align: center; }
+.foc-table tbody td { padding: 11px 14px; border-bottom: 1px solid rgba(35, 44, 59, 0.5); }
+.foc-table tbody tr:last-child td { border-bottom: none; }
+.foc-table tbody tr { transition: background 0.15s ease; }
+.foc-table tbody tr:hover { background: rgba(94, 234, 212, 0.05); }
+.foc-name { font-weight: 600; }
+.foc-num { font-family: var(--font-mono); text-align: center; white-space: nowrap; }
+.foc-time { font-family: var(--font-mono); color: var(--muted); text-align: center; white-space: nowrap; }
+.foc-muted { color: var(--muted); font-style: italic; }
+
+/* Status badges */
+.foc-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid transparent;
+}
+.foc-badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.foc-badge--idle { color: #94a3b8; background: rgba(148, 163, 184, 0.12); border-color: rgba(148, 163, 184, 0.28); }
+.foc-badge--en-route { color: #34d399; background: rgba(52, 211, 153, 0.12); border-color: rgba(52, 211, 153, 0.30); }
+.foc-badge--stopped { color: #fbbf24; background: rgba(251, 191, 36, 0.12); border-color: rgba(251, 191, 36, 0.30); }
+.foc-badge--offline { color: #f87171; background: rgba(248, 113, 113, 0.12); border-color: rgba(248, 113, 113, 0.30); }
+
+/* Map placeholder */
+.foc-map {
+  min-height: clamp(420px, 52vh, 620px); display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center; gap: 10px; padding: 32px;
+  background-color: var(--panel);
+  background-image:
+    radial-gradient(700px 360px at 50% 40%, rgba(94, 234, 212, 0.10), transparent 70%),
+    linear-gradient(rgba(94, 234, 212, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(94, 234, 212, 0.06) 1px, transparent 1px);
+  background-size: auto, 32px 32px, 32px 32px;
+}
+.foc-map__tag {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.2em;
+  text-transform: uppercase; color: var(--accent); border: 1px solid rgba(94, 234, 212, 0.4);
+  border-radius: 999px; padding: 5px 14px; margin-bottom: 6px;
+}
+.foc-map__title { font-size: clamp(22px, 3vw, 30px); font-weight: 800; letter-spacing: -0.01em; }
+.foc-map__sub { font-size: 14px; color: var(--muted); max-width: 320px; }
+
+.foc-message { padding: 28px; color: var(--muted); }
+
+@keyframes foc-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+@media (max-width: 900px) {
+  .foc-stats { grid-template-columns: 1fr; }
+}

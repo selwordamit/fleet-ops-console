@@ -57,7 +57,6 @@ MAX_STEP_DEG = 0.0003
 # Battery decreases by this value every telemetry tick.
 BATTERY_DRAIN_PER_TICK = 0.5
 
-
 @dataclass
 class AgentState:
     """
