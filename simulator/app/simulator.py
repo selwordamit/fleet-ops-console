@@ -50,6 +50,9 @@ STATUS_WEIGHTS = [2, 6, 1, 1]
 
 MOVING_STATUS = "en-route"
 
+# Status reported once an agent's battery is fully depleted (cannot drive).
+DEPLETED_STATUS = "offline"
+
 # Max movement per telemetry tick.
 # 0.0003 degrees is roughly around 30 meters, depending on location.
 MAX_STEP_DEG = 0.0003
@@ -197,13 +200,19 @@ def _next_telemetry(state: AgentState) -> dict:
     # Drain battery but never let it go below 0.
     state.battery = max(0.0, state.battery - BATTERY_DRAIN_PER_TICK)
 
-    # Pick a status using weights.
-    # Example: en-route is more likely than offline.
-    status = random.choices(STATUSES, weights=STATUS_WEIGHTS, k=1)[0]
+    if state.battery <= 0.0:
+        # A depleted agent cannot drive: report it as offline and not moving.
+        # This keeps demo telemetry internally consistent (no en-route at 0% battery).
+        status = DEPLETED_STATUS
+        speed = 0.0
+    else:
+        # Pick a status using weights.
+        # Example: en-route is more likely than offline.
+        status = random.choices(STATUSES, weights=STATUS_WEIGHTS, k=1)[0]
 
-    # Only moving agents get speed.
-    # Non-moving statuses report speed 0.
-    speed = round(random.uniform(15.0, 70.0), 1) if status == MOVING_STATUS else 0.0
+        # Only moving agents get speed.
+        # Non-moving statuses report speed 0.
+        speed = round(random.uniform(15.0, 70.0), 1) if status == MOVING_STATUS else 0.0
 
     return {
         # Rounded coordinates keep payloads clean and realistic enough for demo.
