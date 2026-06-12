@@ -24,7 +24,9 @@ services:
     build: ./simulator
     environment:
       BACKEND_URL: http://backend:8000
-      AGENT_COUNT: "3"
+      # Sensible defaults for a containerized run; override as needed.
+      SIMULATION_MODE: local_cluster
+      AGENT_COUNT: "30"
       TELEMETRY_INTERVAL_SECONDS: "2"
     depends_on:
       backend:

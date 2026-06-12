@@ -1,13 +1,17 @@
 import json
+import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache.client import redis_client
 from app.cache.keys import agent_state_key
 from app.models.telemetry import Telemetry
+from app.realtime.socket import emit_agent_telemetry_updated
 from app.repositories.agent import get_agent
 from app.repositories.telemetry import insert_telemetry
 from app.schemas.telemetry import TelemetryCreate
+
+logger = logging.getLogger(__name__)
 
 
 class AgentNotFoundError(Exception):
@@ -20,15 +24,24 @@ class AgentNotFoundError(Exception):
 async def ingest_telemetry(
     session: AsyncSession, agent_id: int, payload: TelemetryCreate
 ) -> Telemetry:
-    
+
     if await get_agent(session, agent_id) is None:
         raise AgentNotFoundError(agent_id)
 
     row = await insert_telemetry(session, agent_id, payload)
     await session.commit()
     await session.refresh(row)
-    
+
     await _update_latest_state(row)
+
+    try:
+        await emit_agent_telemetry_updated(row)
+    except Exception:
+        logger.warning(
+            "Telemetry persisted but live emit failed agent_id=%s",
+            row.agent_id,
+            exc_info=True,
+        )
 
     return row
 
