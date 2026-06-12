@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class AgentNotFoundError(Exception):
-    
+
     def __init__(self, agent_id: int) -> None:
         self.agent_id = agent_id
         super().__init__(f"Agent {agent_id} not found")
@@ -24,16 +24,14 @@ class AgentNotFoundError(Exception):
 async def ingest_telemetry(
     session: AsyncSession, agent_id: int, payload: TelemetryCreate
 ) -> Telemetry:
-    
+
     if await get_agent(session, agent_id) is None:
         raise AgentNotFoundError(agent_id)
 
-    # Persist durable history to Postgres.
     row = await insert_telemetry(session, agent_id, payload)
     await session.commit()
     await session.refresh(row)
 
-    # Mirror the latest state into Redis for fast current-state reads.Only afer postgres commit
     await _update_latest_state(row)
 
     try:

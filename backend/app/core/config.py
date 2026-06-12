@@ -7,14 +7,9 @@ class Settings(BaseSettings):
     app_name: str = "Fleet Operations Console"
     environment: str = "development"
     debug: bool = False 
-    api_prefix: str = "/api" # Instead of hardcoding "/api" in the route definitions, we can use this setting.
-
-    # asyncpg driver - asynchronous driver for PostgreSQL, compatible with SQLAlchemy's async support.
+    api_prefix: str = "/api" 
     database_url: str = "postgresql+asyncpg://fleetops:fleetops@localhost:5432/fleetops"
-
-    # Redis connection string. Matches the docker-compose redis service; db 0 is the default.
     redis_url: str = "redis://localhost:6379/0"
-
     model_config = {"env_file": ".env"}
 
 
@@ -22,6 +17,5 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     # Cached so the .env file is read once, not on every call.
     return Settings()
-
 
 settings = get_settings()

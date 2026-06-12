@@ -18,7 +18,6 @@ async def post_telemetry(
     payload: TelemetryCreate,
     session: AsyncSession = Depends(get_db_session),
 ) -> TelemetryRead:
-    # Thin handler: validation is in the schema, orchestration is in the service.
     try:
         return await ingest_telemetry(session, agent_id, payload)
     except AgentNotFoundError as exc:
