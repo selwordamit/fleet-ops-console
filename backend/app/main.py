@@ -14,8 +14,4 @@ api.include_router(health_router)
 api.include_router(agents_router, prefix=settings.api_prefix)
 api.include_router(telemetry_router, prefix=settings.api_prefix)
 
-# Wrap FastAPI with the Socket.IO ASGI app. socketio handles /socket.io/* (and the
-# lifespan scope) and forwards every other HTTP request to FastAPI unchanged, so
-# REST behavior is untouched. Exported as `app` so `uvicorn app.main:app` and
-# existing imports keep working.
 app = socketio.ASGIApp(sio, other_asgi_app=api)
