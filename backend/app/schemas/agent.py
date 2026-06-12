@@ -6,12 +6,6 @@ from app.schemas.enums import AgentStatus
 
 
 class AgentCreate(BaseModel):
-    """Incoming payload to register a new agent.
-
-    `name`/`type` stay free-form strings; `status` is constrained to AgentStatus.
-    `use_enum_values=True` stores the validated value as the plain string, so the
-    service persists a clean string to Postgres and responses serialize cleanly.
-    """
 
     model_config = ConfigDict(use_enum_values=True)
 
@@ -21,7 +15,6 @@ class AgentCreate(BaseModel):
 
 
 class AgentRead(BaseModel):
-    """Agent as returned to clients."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -35,11 +28,6 @@ class AgentRead(BaseModel):
 
 
 class AgentLatestState(BaseModel):
-    """An agent's latest reported telemetry, sourced from Redis current-state.
-
-    Mirrors the snapshot written on telemetry ingestion (agent:{id}:state). The
-    agent_id is carried by the parent AgentCurrentState, so it is omitted here.
-    """
 
     lat: float
     lng: float
@@ -50,12 +38,7 @@ class AgentLatestState(BaseModel):
 
 
 class AgentCurrentState(BaseModel):
-    """An agent's identity plus its latest state, for the live current-state view.
-
-    latest_state is None when the agent exists in Postgres but has no Redis state
-    yet (registered but not reporting). Identity fields come from Postgres.
-    """
-
+    
     id: int
     name: str
     type: str

@@ -23,7 +23,6 @@ async def post_agent(
     payload: AgentCreate,
     session: AsyncSession = Depends(get_db_session),
 ) -> AgentRead:
-    # Thin handler: validation is in the schema, orchestration is in the service.
     return await create_agent(session, payload)
 
 
@@ -34,8 +33,6 @@ async def list_all_agents(
     return await get_agents(session)
 
 
-# Declared before "/agents/{agent_id}" so the literal "current-state" path is not
-# captured by the int path parameter (which would 422 on the non-numeric value).
 @router.get("/agents/current-state", response_model=list[AgentCurrentState])
 async def list_current_state(
     session: AsyncSession = Depends(get_db_session),
