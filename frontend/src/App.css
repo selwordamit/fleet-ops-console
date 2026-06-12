@@ -218,11 +218,7 @@ body { margin: 0; }
 .foc-scroll::-webkit-scrollbar-track { background: transparent; }
 
 /* ============ Leaflet theming ============ */
-/* Dark "operations console" treatment for the bright OSM tiles. Applied only to
-   tile <img> elements so the markers/controls keep full color. */
-.leaflet-tile {
-  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.9) grayscale(0.18) saturate(0.85);
-}
+/* CartoDB Dark Matter tiles are natively black — no filter needed. */
 .leaflet-container { background: var(--bg); font-family: inherit; }
 .leaflet-bar a { background: var(--panel); color: var(--text); border-color: var(--border); }
 .leaflet-bar a:hover { background: var(--panel-2); }
