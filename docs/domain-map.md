@@ -240,3 +240,124 @@ repository, the planned service, related routes or events, and its implementatio
 
 This mirrors the **Cache vs Database Policy** table in [`architecture.md`](architecture.md); that
 table is the authoritative version if the two ever diverge.
+
+
+# 6. Fleet Operations Console — Data Model
+
+This document describes the planned relational data model for the Fleet Operations Console.
+
+The current implemented database table is:
+
+- `agents`
+
+The rest of the entities are planned and will be implemented gradually.
+
+---
+
+## Conceptual ERD
+
+```mermaid
+erDiagram
+    USERS ||--o{ COMMANDS : issues
+    AGENTS ||--o{ TELEMETRY : reports
+    AGENTS ||--o{ ALERTS : triggers
+    AGENTS ||--o{ COMMANDS : receives
+    ALERT_RULES ||--o{ ALERTS : creates
+
+    USERS {
+        int id
+        string email
+        string password_hash
+        string role
+        datetime created_at
+        datetime updated_at
+    }
+
+    AGENTS {
+        int id
+        string name
+        string type
+        string status
+        datetime last_seen
+        datetime created_at
+        datetime updated_at
+    }
+
+    TELEMETRY {
+        int id
+        int agent_id
+        float lat
+        float lng
+        float speed
+        float battery
+        string status
+        datetime recorded_at
+    }
+
+    ALERT_RULES {
+        int id
+        string metric
+        string operator
+        float threshold
+        string severity
+        bool is_active
+        int created_by
+        datetime created_at
+        datetime updated_at
+    }
+
+    ALERTS {
+        int id
+        int agent_id
+        int rule_id
+        float value
+        string severity
+        datetime triggered_at
+        datetime resolved_at
+    }
+
+    COMMANDS {
+        int id
+        int agent_id
+        int issued_by
+        string type
+        string status
+        json payload
+        datetime issued_at
+        datetime acknowledged_at
+    }
+```
+
+---
+
+## Entity Summary
+
+| Entity | Purpose | Status |
+|---|---|---|
+| `agents` | Stores registered vehicles/devices in the fleet | Implemented |
+| `telemetry` | Stores historical telemetry updates from agents | Planned |
+| `users` | Stores users and roles for auth/RBAC | Planned |
+| `alert_rules` | Stores operator-defined alert rules | Planned |
+| `alerts` | Stores triggered alerts for audit/history | Planned |
+| `commands` | Stores commands sent to agents and their lifecycle | Planned |
+
+---
+
+## Relationship Summary
+
+| Relationship | Meaning |
+|---|---|
+| `Agent 1 → many Telemetry` | One vehicle sends many telemetry records over time |
+| `Agent 1 → many Alerts` | One vehicle can trigger many alerts |
+| `Agent 1 → many Commands` | One vehicle can receive many commands |
+| `AlertRule 1 → many Alerts` | One rule can create many alerts |
+| `User 1 → many Commands` | One operator/admin can issue many commands |
+
+---
+
+## Notes
+
+- PostgreSQL is the source of truth for durable data: agents, telemetry history, users, alerts, commands, and rules.
+- Redis is not represented in this ERD because Redis stores operational/ephemeral data, not relational source-of-truth data.
+- The current physical database only includes the `agents` table.
+- The rest of the entities are conceptual for now and will be implemented gradually through future SQLAlchemy models and Alembic migrations.
