@@ -286,3 +286,35 @@ Reason: Each step stayed small and verifiable. A plain `fetch` proves the client
 Tradeoff: The manual `useEffect` fetch has no caching, retry, or dedup — and under React `StrictMode` it double-fires in dev (harmless; gone in the production build). There is no refresh/polling, so the screen is a one-shot snapshot until reloaded. The single `Status` column hides the stored `agent.status` (still available in the type for later). No frontend Dockerfile yet; the `frontend` Compose service remains behind a profile.
 
 Verification: `npm run build` (`tsc --noEmit && vite build`) passes; `npm run dev` serves on `:5173`; DevTools Network shows `GET /api/agents/current-state` → 200; the dashboard renders real agents with status badges, agents without a cached snapshot show "No telemetry", the summary counts (total / with / without current state) match, and the map shows the placeholder panel.
+
+---
+
+## 2026-06-11 | WebSocket MVP contract: single `agent.telemetry.updated` event, emit-after-persist
+
+Context: Before writing any Socket.IO code, the project requires the real-time contract to be defined in `docs/ws-protocol.md` so the backend Pydantic event schemas and frontend TypeScript types are built against one fixed wire format. We are in REST snapshot mode; WebSocket is not yet implemented.
+
+Decision: Define an MVP contract with exactly one event, `agent.telemetry.updated` (backend → frontend), wrapped in the project-standard envelope (`type` / `payload` / `ts` / `requestId`). Its payload is `{ agent_id, latest_state }`, where `latest_state` reuses the existing `AgentLatestState` shape from `GET /api/agents/current-state`. The event is emitted **only after** the Postgres telemetry commit **and** the Redis latest-state update both succeed. The frontend loads the initial snapshot via REST, then applies events as live replacements of one agent's `latest_state`. No code was changed in this checkpoint.
+
+Alternatives: Start implementing Socket.IO and let the shape emerge from code (risks backend/frontend drift across two languages); a richer first event carrying full agent metadata (`name`, `type`) per tick (redundant — identity is stable and already loaded from the snapshot); emitting before/independently of the DB+cache writes (could push state a later failure rolls back); pushing full-fleet snapshots over the socket instead of per-agent deltas (defeats the point of an incremental live channel); defining multiple events now (alerts/commands/ACK) before the telemetry channel is even proven.
+
+Reason: Writing the contract first makes the wire format the single fixed point both implementations conform to, per `CLAUDE.md`. Telemetry is the one flow already proven end-to-end, so a single telemetry-push event is the smallest change that turns the refresh-based dashboard live, and reusing `latest_state` means the frontend applies events with zero shape translation. Emit-after-persist extends the existing Postgres-first ingestion rule to the push channel, so events never describe non-durable state and a reconnecting client's REST re-fetch stays consistent.
+
+Tradeoff: A per-agent delta with no metadata means a brand-new agent_id not present in the loaded snapshot is not fully handled yet (deferred). The contract assumes a single backend worker — Redis pub/sub fan-out and multi-worker scaling are out of scope, so this shape will need revisiting before horizontal scaling. No batching/retry/replay, and the socket is unauthenticated in this MVP.
+
+Verification: Documentation-only checkpoint — no runtime behavior to test. Verified the payload matches the live shapes: `backend/app/schemas/agent.py` `AgentLatestState` and `frontend/src/types/agent.ts` `AgentLatestState` (both `lat/lng/speed/battery/status/recorded_at`), and status values match `backend/app/schemas/enums.py` `AgentStatus` (`idle | en-route | stopped | offline`). Envelope matches the `CLAUDE.md` WebSocket Contract Rules.
+
+---
+
+## 2026-06-11 | Backend Socket.IO foundation: wrap FastAPI with socketio.ASGIApp
+
+Context: With the WebSocket contract written, the first runtime step is a minimal Socket.IO server that can accept connections — no telemetry emit yet. It had to coexist with the existing FastAPI REST app without changing any route behavior or the `app.main:app` entrypoint used by Uvicorn, the Dockerfile, and tests.
+
+Decision: Add a dedicated `app/realtime/` package holding `socket.py` (an `socketio.AsyncServer(async_mode="asgi")` plus `connect`/`disconnect` handlers and an optional `connection.ready` envelope emit). In `app/main.py`, keep the FastAPI instance (renamed `api`) with all routers, then export `app = socketio.ASGIApp(sio, other_asgi_app=api)`. Socket.IO owns `/socket.io/*` and the lifespan scope; all other HTTP is forwarded to FastAPI untouched. Added `python-socketio>=5.11.0` to requirements. CORS is opened (`cors_allowed_origins="*"`) for the dev foundation only.
+
+Alternatives: Mount Socket.IO as a sub-app via `api.mount("/socket.io", ...)` (more fragile around the ASGI handshake/lifespan than the wrapper pattern python-socketio documents); run Socket.IO as a separate process/port (extra deployment surface, no benefit at this stage); put the server inline in `main.py` (mixes transport setup with app assembly — a dedicated `realtime/` package keeps the real-time channel's home explicit, parallel to `api/`); use raw Starlette WebSockets instead of Socket.IO (contradicts the chosen stack and the ws-protocol envelope).
+
+Reason: The `ASGIApp(other_asgi_app=...)` wrapper is python-socketio's documented FastAPI integration and the least invasive: REST routing, schemas, and the `app.main:app` import path are all unchanged, so the Dockerfile, Uvicorn command, and existing tests keep working with no edits. A separate `realtime/` package matches the project's layered structure and isolates emit logic for the next checkpoint.
+
+Tradeoff: `cors_allowed_origins="*"` and an unauthenticated socket are acceptable only for this foundation and must be tightened in the socket-auth checkpoint. The module also self-bootstraps logging (`basicConfig` if the root logger is unconfigured) because no central `core/logging` exists yet — a temporary shim to make connect/disconnect visible, to be replaced when real logging config lands. A single-process `AsyncServer` has no cross-worker fan-out; multi-worker scaling (Redis manager) is deferred.
+
+Verification: `python -m pytest tests/ -q` → 42 passed (incl. `test_health` via `TestClient` over the wrapped `app`). `python -c "from app.main import app, api"` → `app` is `ASGIApp`, `api` is `FastAPI`. Ran Uvicorn on the wrapped app and confirmed: `GET /health` → `200 {"status":"ok"}` through the wrapper; a `socketio.AsyncClient` connected (received a `connection.ready` envelope) and disconnected; server logged `Socket.IO client connected/disconnected: sid=...`. No `agent.telemetry.updated` events emitted.
