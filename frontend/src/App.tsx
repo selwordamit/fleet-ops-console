@@ -11,6 +11,15 @@ import type { AgentTelemetryUpdatedEvent } from "./types/socket";
 // Sidebar filter keys: every status, plus "all" and the no-telemetry bucket.
 type FilterKey = AgentStatus | "all" | "no-telemetry";
 
+// Socket.IO connection status, surfaced as a compact header indicator.
+type ConnectionStatus = "connecting" | "connected" | "disconnected";
+
+const CONNECTION_LABEL: Record<ConnectionStatus, string> = {
+  connected: "Live",
+  connecting: "Reconnecting",
+  disconnected: "Disconnected",
+};
+
 const STATUS_LEGEND: { key: AgentStatus; label: string }[] = [
   { key: "en-route", label: "En-route" },
   { key: "idle", label: "Idle" },
@@ -18,10 +27,11 @@ const STATUS_LEGEND: { key: AgentStatus; label: string }[] = [
   { key: "offline", label: "Offline" },
 ];
 
-// Deferred capabilities, shown honestly as "not built yet" rather than as fake
-// working UI. These map to later build-order phases (WebSocket, alerts, commands).
+// Capability cards. Live telemetry is now active via Socket.IO; alerts and
+// commands are still deferred to later build-order phases and shown honestly as
+// "coming next" rather than as fake working UI.
 const COMING_NEXT = [
-  { title: "Live telemetry stream", note: "Push updates without manual refresh", tag: "Requires WebSocket" },
+  { title: "Live telemetry stream", note: "Push updates without manual refresh", tag: "Live via Socket.IO" },
   { title: "Alerts & notifications", note: "Low battery, speeding, offline", tag: "Coming next" },
   { title: "Operator commands", note: "Ping · Recall · Set status", tag: "Coming next" },
 ];
@@ -43,6 +53,8 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [filter, setFilter] = useState<FilterKey>("all");
   const [lastSync, setLastSync] = useState<Date | null>(null);
+  // Starts as "connecting": the socket effect calls socket.connect() on mount.
+  const [status, setStatus] = useState<ConnectionStatus>("connecting");
 
   useEffect(() => {
     getCurrentState()
@@ -53,18 +65,43 @@ export default function App() {
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
 
-  // Socket.IO lifecycle for the whole App. This checkpoint only logs events to
-  // the console — it does not yet update agent state or move markers. Named
-  // handlers give stable references so cleanup can remove exactly these.
+  // Socket.IO lifecycle for the whole App. The client connects, receives
+  // agent.telemetry.updated events, and applies each latest_state to the
+  // existing React agents state so the map, list, and details update live.
+  // Named handlers give stable references so cleanup can remove exactly these.
   useEffect(() => {
     function onConnect() {
       console.log("[socket] connected:", socket.id);
+      setStatus("connected");
     }
     function onDisconnect(reason: string) {
       console.log("[socket] disconnected:", reason);
+      setStatus("disconnected");
     }
     function onConnectionReady(payload: unknown) {
       console.log("[socket] connection.ready:", payload);
+    }
+    // Manager-level reconnection signals. reconnect_attempt fires while the
+    // transport is retrying; reconnect fires only after a *successful*
+    // re-connection and never on the first connect — so it is the safe trigger
+    // for a REST resync that is not redundant with the initial snapshot load.
+    function onReconnectAttempt(attempt: number) {
+      console.log("[socket] reconnect attempt:", attempt);
+      setStatus("connecting");
+    }
+    function onReconnect(attempt: number) {
+      console.log("[socket] reconnected after attempt:", attempt);
+      // REST current-state is authoritative: replace (not merge) the agents
+      // array to recover any telemetry missed while disconnected. On failure,
+      // keep the existing state and log — never crash the dashboard.
+      getCurrentState()
+        .then((data) => {
+          setAgents(data);
+          setLastSync(new Date());
+        })
+        .catch((err) => {
+          console.error("[socket] resync after reconnect failed:", err);
+        });
     }
     function onTelemetryUpdated(event: AgentTelemetryUpdatedEvent) {
       console.log("[socket] agent.telemetry.updated:", event);
@@ -91,6 +128,9 @@ export default function App() {
     socket.on("disconnect", onDisconnect);
     socket.on("connection.ready", onConnectionReady);
     socket.on("agent.telemetry.updated", onTelemetryUpdated);
+    // Reconnection events live on the Manager (socket.io), not the socket.
+    socket.io.on("reconnect_attempt", onReconnectAttempt);
+    socket.io.on("reconnect", onReconnect);
 
     socket.connect();
 
@@ -99,6 +139,8 @@ export default function App() {
       socket.off("disconnect", onDisconnect);
       socket.off("connection.ready", onConnectionReady);
       socket.off("agent.telemetry.updated", onTelemetryUpdated);
+      socket.io.off("reconnect_attempt", onReconnectAttempt);
+      socket.io.off("reconnect", onReconnect);
       socket.disconnect();
     };
   }, []);
@@ -144,6 +186,10 @@ export default function App() {
         <span className="foc-logo" />
         <span className="foc-brand-title">Fleet Operations Console</span>
         <span className="foc-topbar__spacer" />
+        <div className={`foc-conn foc-conn--${status}`}>
+          <span className="foc-conn__dot" />
+          <span className="foc-conn__label">{CONNECTION_LABEL[status]}</span>
+        </div>
         <div className="foc-sync">
           <span className="foc-sync__label">Last sync</span>
           <span className="foc-sync__value">{lastSync ? lastSync.toLocaleTimeString() : "—"}</span>
@@ -209,7 +255,7 @@ export default function App() {
             <span className="foc-overlay__muted">· {withoutTelemetry} unplotted</span>
             <span className="foc-overlay__sep" />
             <span className="foc-overlay__muted">Live updates</span>
-            <span className="foc-deferred">Requires WebSocket</span>
+            <span className="foc-deferred">Live via Socket.IO</span>
           </div>
 
           <div className="foc-map-overlay foc-map-overlay--bottom">

@@ -12,7 +12,7 @@ The backend REST core that the simulator exercises: ingestion (`POST /api/agents
 
 The basic simulator now registers fake agents and POSTs telemetry **only** through the backend REST API (`POST /api/agents`, `POST /api/agents/{id}/telemetry`) — it never touches Postgres or Redis directly. It is configurable via environment variables (mode, agent count, interval, base location, spread, scenario file) and supports two placement modes: `local_cluster` (controlled spread around a base point) and `fixed_points` (exact locations from a scenario JSON file). See `docs/simulator-usage.md` for the run/verify guide.
 
-A **frontend dashboard** now exists under `frontend/` (Vite + React + TypeScript): it renders `GET /api/agents/current-state` as a dark control-room dashboard (summary cards + agents table + a **real Leaflet map** with status-colored markers on CartoDB Dark Matter tiles). It uses a Vite dev proxy (`/api` → `http://localhost:8000`) and a plain typed `fetch` for the initial snapshot, and it now consumes the **live WebSocket channel**: a shared Socket.IO client connects to the backend and `agent.telemetry.updated` events are merged into the existing agents state, so the map/list/summary/detail update live without a refresh. Still no TanStack Query/Zustand (live state is held in `useState` for now), no routing, and no auth.
+A **frontend dashboard** now exists under `frontend/` (Vite + React + TypeScript): it renders `GET /api/agents/current-state` as a dark control-room dashboard (summary cards + agents table + a **real Leaflet map** with status-colored markers on CartoDB Dark Matter tiles). It uses a Vite dev proxy (`/api` → `http://localhost:8000`) and a plain typed `fetch` for the initial snapshot, and it now consumes the **live WebSocket channel**: a shared Socket.IO client connects to the backend and `agent.telemetry.updated` events are merged into the existing agents state, so the map/list/summary/detail update live without a refresh. A compact header indicator shows the live connection status (**Live / Reconnecting / Disconnected**); Socket.IO reconnects automatically, and after a **real reconnect** the frontend re-fetches `GET /api/agents/current-state` and **replaces** the agents array with that authoritative snapshot to correct any events missed while disconnected. Still no TanStack Query/Zustand (live state is held in `useState` for now), no routing, and no auth.
 
 Still pending in the backend API area: telemetry-history read API and `/health` connectivity reporting.
 
@@ -121,6 +121,16 @@ Built on the existing contract (`docs/ws-protocol.md`) and Socket.IO foundation 
 - **Tests** (`tests/test_telemetry_service.py`, 4): emit-once-after-persist with the persisted row; Redis failure propagates and skips emit; emit failure is best-effort and logged; unknown agent raises before any side effects.
 - **Frontend contract + client**: `src/types/socket.ts` (event types reusing `AgentLatestState`), `src/realtime/socket.ts` (one shared `socket`, `autoConnect: false`, backend origin).
 - **Frontend consumption** (`src/App.tsx`): a dedicated `useEffect` registers `connect`/`disconnect`/`connection.ready`/`agent.telemetry.updated` listeners before `socket.connect()`, cleans up with `off` + `disconnect`, and merges each event's `latest_state` into the existing `agents` `useState` via an immutable functional update (unknown agent ids ignored). Map/list/summary/detail re-render automatically.
+
+### WebSocket reconnect hardening — connection status + REST resync ✓
+
+Documentation/verification closeout of the WebSocket phase, built on the live-push MVP. **Frontend-only** (`src/App.tsx`, `src/App.css`); no backend or socket-config changes, no new features.
+
+- **Connection-status UI**: a typed `ConnectionStatus` (`connecting | connected | disconnected`) in `App.tsx` drives a compact header pill — `connected → "Live"`, `connecting → "Reconnecting"`, `disconnected → "Disconnected"` — styled in `App.css` (`.foc-conn`) to match the control-room header. Transitions: initial `connecting`; socket `connect → connected`; socket `disconnect → disconnected`; Manager `reconnect_attempt → connecting`.
+- **Automatic reconnect**: unchanged Socket.IO default behavior — the Manager (`socket.io`) re-establishes the transport; no socket configuration changed.
+- **REST resync after reconnect**: a `reconnect` listener on the Manager — which fires only on a **successful** re-connection, never on the first connect — calls the existing `getCurrentState()` and **replaces** the `agents` array with the returned authoritative snapshot, recovering any `agent.telemetry.updated` events missed while disconnected. The initial page-load snapshot is therefore **not** re-fetched on first connect. Resync failure keeps the existing agents state and logs a console error (no crash). `LAST SYNC` updates after a successful resync.
+- **Cleanup**: the effect removes every listener via its named handler reference, including the two Manager listeners (`reconnect_attempt`, `reconnect`), then disconnects — so React `StrictMode` does not accumulate duplicate listeners or trigger a duplicate resync.
+- Incremental `agent.telemetry.updated` updates and the "unknown agent ids ignored" behavior are unchanged.
 
 ---
 
@@ -244,6 +254,16 @@ python -m pytest tests/ -q
 # Frontend: npm run dev, open the dashboard; DevTools console shows [socket] connected
 #   and [socket] connection.ready, then on a telemetry POST [socket] agent.telemetry.updated
 #   — and the agent's marker/list/detail update live (no refresh)
+
+# WebSocket reconnect hardening (backend up; frontend socket connected) — verified manually
+#   header shows "Live" once connected
+#   stop the real backend process: header flips to "Disconnected", then "Reconnecting"
+#     while Socket.IO retries (console: [socket] disconnected, then [socket] reconnect attempt: N)
+#   restart the backend: Socket.IO reconnects, header returns to "Live"
+#     (console: [socket] reconnected after attempt: N)
+#   on reconnect the frontend re-fetches GET /api/agents/current-state and REPLACES the agents array
+#   — telemetry that changed during the outage is corrected with no browser refresh; LAST SYNC updates
+#   resync failure path: getCurrentState() error keeps existing agents and logs a console error (no crash)
 ```
 
 Notes:
@@ -264,7 +284,7 @@ Notes:
 - No telemetry-history read API yet.
 - No User, Alert, or Command models yet.
 - Telemetry is a single simple table; no partitioning or retention yet (deferred scalability work).
-- WebSocket: `agent.telemetry.updated` is emitted end-to-end and the frontend applies it live, but pieces are deferred — no **reconnect re-sync** (a client that disconnects can miss events with no reconciliation), late-registered agents are ignored (an unknown `agent_id` over the socket is not appended), no connection-status UI, the socket is **unauthenticated** (dev CORS `*`), and it is single-worker only (no Redis pub/sub fan-out).
+- WebSocket: `agent.telemetry.updated` is emitted end-to-end, the frontend applies it live, a **connection-status indicator** is shown, and a real reconnect now triggers a **REST resync** that replaces the agents array with the authoritative snapshot — but pieces remain deferred: the backend socket URL is **hardcoded** (`http://localhost:8000`, no env-based config), late-registered agents are still ignored (an unknown `agent_id` over the socket is not appended), the socket is **unauthenticated** (dev CORS `*`), there is no UI backpressure/throttling, and it is single-worker only (no Redis pub/sub fan-out).
 - Frontend gaps remain: live state is held in `useState` (no TanStack Query/Zustand yet); beyond the initial snapshot + live socket merge there is no manual refresh/polling, no routing, and no auth; and there is still **no frontend Dockerfile** (the `frontend` Compose service stays behind a `frontend` profile, not built). The map is now a **real Leaflet map** and live WebSocket updates work — both previously listed here as missing. Under React `StrictMode` the mount effects double-fire in dev (harmless; absent in production).
 - No alerts or commands (no command creation, no ACK flow).
 - No auth/JWT/RBAC.
@@ -292,7 +312,7 @@ Known simulator tradeoffs:
 
 The next checkpoint will be chosen before implementation — candidates:
 
-- WebSocket hardening: reconnect re-sync (re-fetch the snapshot on reconnect), a connection-status indicator, and handling agents registered after initial load.
+- WebSocket hardening (remaining): handling agents registered after initial load (unknown `agent_id`s are still ignored), socket auth, env-based socket URL, UI throttling/backpressure, and Redis pub/sub multi-worker fan-out. (Connection-status indicator and reconnect re-sync are now done.)
 - Migrate live state to **Zustand** (per the frontend rules) once it outgrows `App.tsx`.
 - Alerts (build-order Step 9): rules, evaluation, persistence, and alert WebSocket events (reuse the emit pattern).
 - Telemetry history read API (for charts).
