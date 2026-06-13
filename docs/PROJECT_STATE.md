@@ -6,13 +6,13 @@ This file is the current working state of the project. Update it after each mean
 
 ## Current Phase
 
-Backend REST core + basic simulator verified, and **backend + simulator are now Dockerized and wired into Compose** alongside Postgres and Redis (`docker compose up --build` runs `postgres + redis + backend + simulator`; the frontend service is deferred behind a `frontend` profile and not built). The simulator checkpoint was implemented before frontend/WebSocket to verify Simulator → Backend communication early — so this does **not** mean every original build-order step before Step 8 is complete (frontend, WebSocket, alerts, commands, auth/RBAC are all still not implemented; see *Known Issues / Not Implemented Yet*).
+Backend REST core + basic simulator verified, and **backend + simulator are now Dockerized and wired into Compose** alongside Postgres and Redis (`docker compose up --build` runs `postgres + redis + backend + simulator`; the frontend service is deferred behind a `frontend` profile and not built). The simulator checkpoint was implemented before frontend/WebSocket to verify Simulator → Backend communication early — so this does **not** mean every original build-order step before Step 8 is complete (alerts, commands, auth/RBAC are still not implemented; see *Known Issues / Not Implemented Yet*).
 
 The backend REST core that the simulator exercises: ingestion (`POST /api/agents/{agent_id}/telemetry`) persists history to Postgres and updates Redis latest state, the minimal Agent API (create/list/get) registers agents through backend REST, and `GET /api/agents/current-state` reads agents from Postgres and their latest state from Redis so clients never touch the cache directly. API-level status enum validation restricts `AgentCreate.status` and `TelemetryCreate.status` to the allowed values.
 
 The basic simulator now registers fake agents and POSTs telemetry **only** through the backend REST API (`POST /api/agents`, `POST /api/agents/{id}/telemetry`) — it never touches Postgres or Redis directly. It is configurable via environment variables (mode, agent count, interval, base location, spread, scenario file) and supports two placement modes: `local_cluster` (controlled spread around a base point) and `fixed_points` (exact locations from a scenario JSON file). See `docs/simulator-usage.md` for the run/verify guide.
 
-A **frontend Client REST Dashboard MVP** now exists: a Vite + React + TypeScript app under `frontend/` that renders `GET /api/agents/current-state` as a modern dark dashboard (summary cards + agents table + a map *placeholder*). It uses a Vite dev proxy (`/api` → `http://localhost:8000`) and a plain typed `fetch` client — no TanStack Query, Zustand, Leaflet, WebSocket, or auth yet. This is the **first** frontend step (build-order Steps 6–7, REST portion only); the live/map/realtime pieces remain unimplemented.
+A **frontend dashboard** now exists under `frontend/` (Vite + React + TypeScript): it renders `GET /api/agents/current-state` as a dark control-room dashboard (summary cards + agents table + a **real Leaflet map** with status-colored markers on CartoDB Dark Matter tiles). It uses a Vite dev proxy (`/api` → `http://localhost:8000`) and a plain typed `fetch` for the initial snapshot, and it now consumes the **live WebSocket channel**: a shared Socket.IO client connects to the backend and `agent.telemetry.updated` events are merged into the existing agents state, so the map/list/summary/detail update live without a refresh. Still no TanStack Query/Zustand (live state is held in `useState` for now), no routing, and no auth.
 
 Still pending in the backend API area: telemetry-history read API and `/health` connectivity reporting.
 
@@ -105,6 +105,23 @@ Still pending in the backend API area: telemetry-history read API and `/health` 
 - `src/features/agents/AgentsTable.tsx` — presentational table (ID, Name, Type, Status, Lat, Lng, Speed, Battery, Recorded At) with status badges and a "No telemetry" state when `latest_state` is null; never calls the backend.
 - `src/App.css` — all styling (control-room dark theme); the map is a labeled **placeholder** panel (Leaflet deferred). Wording avoids "Live" because this is a REST snapshot, not real-time.
 
+### Frontend — Real map (Leaflet) ✓
+
+- `src/features/map/FleetMap.tsx` renders a Leaflet map via `react-leaflet` (`MapContainer`, `TileLayer`, `Marker`, `ZoomControl`) on **CartoDB Dark Matter** tiles, centered on the Tel Aviv area.
+- Status-colored `L.divIcon` markers, one per agent that has `latest_state`; agents without telemetry are skipped (no coordinate to plot). Clicking a marker selects the agent (shared `selectedId`/`onSelect` with the list and detail panel).
+- Replaces the earlier map *placeholder*.
+
+### WebSocket telemetry MVP — live push end-to-end ✓
+
+Built on the existing contract (`docs/ws-protocol.md`) and Socket.IO foundation (`app/realtime/socket.py`).
+
+- **Event schemas** (`app/schemas/realtime.py`): `AgentLatestStatePayload`, `AgentTelemetryUpdatedPayload`, `AgentTelemetryUpdatedEvent`, reusing the shared `AgentStatus` enum; `requestId` aliased from `request_id`; `ts`/`recorded_at` serialize as ISO-8601 `Z`.
+- **Emitter** (`app/realtime/socket.py`): `emit_agent_telemetry_updated(row, request_id=None)` builds the event from a persisted `Telemetry` row, serializes with `model_dump(mode="json", by_alias=True)`, and broadcasts to all connected clients.
+- **Ingestion wiring** (`app/services/telemetry.py`): emits only after Postgres commit and the Redis latest-state write both succeed, as best-effort — an emit failure logs a warning (with `agent_id`) and still returns the stored row; Postgres/Redis errors are not caught and prevent any emit.
+- **Tests** (`tests/test_telemetry_service.py`, 4): emit-once-after-persist with the persisted row; Redis failure propagates and skips emit; emit failure is best-effort and logged; unknown agent raises before any side effects.
+- **Frontend contract + client**: `src/types/socket.ts` (event types reusing `AgentLatestState`), `src/realtime/socket.ts` (one shared `socket`, `autoConnect: false`, backend origin).
+- **Frontend consumption** (`src/App.tsx`): a dedicated `useEffect` registers `connect`/`disconnect`/`connection.ready`/`agent.telemetry.updated` listeners before `socket.connect()`, cleans up with `off` + `disconnect`, and merges each event's `latest_state` into the existing `agents` `useState` via an immutable functional update (unknown agent ids ignored). Map/list/summary/detail re-render automatically.
+
 ---
 
 ## Key Decisions
@@ -121,6 +138,8 @@ Still pending in the backend API area: telemetry-history read API and `/health` 
 - `alembic.ini` kept ASCII-only with no inline comments (Alembic reads it with the OS locale encoding; configparser does not strip inline comments).
 - Telemetry ingestion: Postgres commit happens before the Redis latest-state write (Postgres is source of truth; a cache hiccup must not lose a stored report). The service owns the transaction boundary; repositories only add/flush. `recorded_at` is server-set for v1.
 - Frontend: REST/server data is fetched through a typed API client and the backend stays the gatekeeper (client never reads Redis). Styling lives in a dedicated CSS file with system fonts (no inline style strings, no external font CDN, no UI library). TanStack Query/Zustand/Leaflet are deferred until their realtime/caching/map benefits are actually needed.
+- WebSocket: the backend emits `agent.telemetry.updated` only **after** Postgres commit and the Redis write succeed, and the emit is **best-effort** (a Socket.IO failure logs but never fails ingestion or rolls back). Event schemas live in a dedicated `app/schemas/realtime.py`, separate from REST/DB models, reusing the shared `AgentStatus` enum.
+- Frontend live state is held in the **existing `useState` agents array** (events merged immutably), not Zustand — a deliberate MVP deviation from the `CLAUDE.md` "Socket.IO state in Zustand" rule, to be revisited when live state outgrows `App.tsx`. One shared Socket.IO client with `autoConnect: false` so React owns the connection lifecycle.
 
 ---
 
@@ -218,6 +237,13 @@ docker compose exec redis redis-cli GET "agent:1:state"
 # Current-state API shows the simulator data
 # GET http://localhost:8000/api/agents/current-state
 #   → 200 OK, the simulator agents with populated "latest_state"
+
+# WebSocket live push (backend up; frontend socket connected)
+python -m pytest tests/ -q
+  → 46 passed  (incl. tests/test_telemetry_service.py emit-integration tests)
+# Frontend: npm run dev, open the dashboard; DevTools console shows [socket] connected
+#   and [socket] connection.ready, then on a telemetry POST [socket] agent.telemetry.updated
+#   — and the agent's marker/list/detail update live (no refresh)
 ```
 
 Notes:
@@ -238,8 +264,8 @@ Notes:
 - No telemetry-history read API yet.
 - No User, Alert, or Command models yet.
 - Telemetry is a single simple table; no partitioning or retention yet (deferred scalability work).
-- No WebSocket/Socket.IO implementation.
-- Frontend exists as the **Client REST Dashboard MVP only**, with deliberate gaps: it uses a plain `useEffect`/`useState` `fetch` (no TanStack Query/Zustand), the map is a **placeholder** (no Leaflet/markers/clustering), there is no refresh/polling (one-shot snapshot until reload), no routing, no auth, and **no frontend Dockerfile** — the `frontend` Compose service is still deferred behind a `frontend` profile so it is not built. Under React `StrictMode` the mount fetch double-fires in dev (harmless; absent in the production build).
+- WebSocket: `agent.telemetry.updated` is emitted end-to-end and the frontend applies it live, but pieces are deferred — no **reconnect re-sync** (a client that disconnects can miss events with no reconciliation), late-registered agents are ignored (an unknown `agent_id` over the socket is not appended), no connection-status UI, the socket is **unauthenticated** (dev CORS `*`), and it is single-worker only (no Redis pub/sub fan-out).
+- Frontend gaps remain: live state is held in `useState` (no TanStack Query/Zustand yet); beyond the initial snapshot + live socket merge there is no manual refresh/polling, no routing, and no auth; and there is still **no frontend Dockerfile** (the `frontend` Compose service stays behind a `frontend` profile, not built). The map is now a **real Leaflet map** and live WebSocket updates work — both previously listed here as missing. Under React `StrictMode` the mount effects double-fire in dev (harmless; absent in production).
 - No alerts or commands (no command creation, no ACK flow).
 - No auth/JWT/RBAC.
 - No offline detection.
@@ -266,8 +292,9 @@ Known simulator tradeoffs:
 
 The next checkpoint will be chosen before implementation — candidates:
 
-- Real map: Leaflet + OpenStreetMap + marker clustering, replacing the dashboard's map placeholder (render agents with `latest_state` as markers), or
-- WebSocket contract + live push (define `docs/ws-protocol.md` first) — would also motivate introducing TanStack Query/Zustand on the frontend, or
+- WebSocket hardening: reconnect re-sync (re-fetch the snapshot on reconnect), a connection-status indicator, and handling agents registered after initial load.
+- Migrate live state to **Zustand** (per the frontend rules) once it outgrows `App.tsx`.
+- Alerts (build-order Step 9): rules, evaluation, persistence, and alert WebSocket events (reuse the emit pattern).
 - Telemetry history read API (for charts).
 
 Do not decide broadly here; the specific next checkpoint will be selected at the start of the next step.

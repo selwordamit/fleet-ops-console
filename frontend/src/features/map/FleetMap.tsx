@@ -3,21 +3,13 @@ import { MapContainer, Marker, TileLayer, ZoomControl } from "react-leaflet";
 
 import type { AgentCurrentState, AgentStatus } from "../../types/agent";
 
-// Renders one circular DivIcon marker per agent that has reported telemetry,
-// colored by status (Model B palette). Presentational only: receives the
-// already-loaded current-state array and selection state, and reports clicks
-// back via onSelect. Still REST snapshot mode — markers reflect the load-time
-// snapshot, not live updates.
 interface FleetMapProps {
   agents: AgentCurrentState[];
   selectedId: number | null;
   onSelect: (id: number) => void;
 }
 
-// Build a status-colored circular DivIcon. Color and selected-ring live in the
-// .foc-marker CSS (no inline style strings); the wrapper class carries status
-// and selection. A DivIcon is an HTML element, so there is no image asset for
-// Vite to fail to resolve.
+
 function makeIcon(status: AgentStatus, selected: boolean) {
   const size = selected ? 18 : 13;
   return L.divIcon({

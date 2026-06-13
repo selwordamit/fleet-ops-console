@@ -5,6 +5,8 @@ import { getCurrentState } from "./api/agents";
 import AgentsTable from "./features/agents/AgentsTable";
 import FleetMap from "./features/map/FleetMap";
 import type { AgentCurrentState, AgentStatus } from "./types/agent";
+import { socket } from "./realtime/socket";
+import type { AgentTelemetryUpdatedEvent } from "./types/socket";
 
 // Sidebar filter keys: every status, plus "all" and the no-telemetry bucket.
 type FilterKey = AgentStatus | "all" | "no-telemetry";
@@ -49,6 +51,56 @@ export default function App() {
         setLastSync(new Date());
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  // Socket.IO lifecycle for the whole App. This checkpoint only logs events to
+  // the console — it does not yet update agent state or move markers. Named
+  // handlers give stable references so cleanup can remove exactly these.
+  useEffect(() => {
+    function onConnect() {
+      console.log("[socket] connected:", socket.id);
+    }
+    function onDisconnect(reason: string) {
+      console.log("[socket] disconnected:", reason);
+    }
+    function onConnectionReady(payload: unknown) {
+      console.log("[socket] connection.ready:", payload);
+    }
+    function onTelemetryUpdated(event: AgentTelemetryUpdatedEvent) {
+      console.log("[socket] agent.telemetry.updated:", event);
+
+      const { agent_id, latest_state } = event.payload;
+      // Functional update: read React's latest agents, not the value captured
+      // when this once-only effect mounted.
+      setAgents((currentAgents) => {
+        if (currentAgents === null) return currentAgents;
+        // Unknown agent id (not in the loaded snapshot): leave state unchanged
+        // for this checkpoint, so React does not re-render.
+        if (!currentAgents.some((a) => a.id === agent_id)) return currentAgents;
+        // Immutable replace: new array, new object only for the matching agent,
+        // all other agents returned by reference unchanged.
+        return currentAgents.map((a) =>
+          a.id === agent_id ? { ...a, latest_state } : a,
+        );
+      });
+    }
+
+    // Register before connecting so the immediate connect/connection.ready
+    // events are not missed.
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+    socket.on("connection.ready", onConnectionReady);
+    socket.on("agent.telemetry.updated", onTelemetryUpdated);
+
+    socket.connect();
+
+    return () => {
+      socket.off("connect", onConnect);
+      socket.off("disconnect", onDisconnect);
+      socket.off("connection.ready", onConnectionReady);
+      socket.off("agent.telemetry.updated", onTelemetryUpdated);
+      socket.disconnect();
+    };
   }, []);
 
   // Derived summary over the real, already-loaded agents.
