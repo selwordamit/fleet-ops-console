@@ -1,9 +1,6 @@
 import type { AgentCurrentState, AgentStatus } from "../../types/agent";
 
-// Presentational agent list for the left sidebar (Model B layout). Receives the
-// already-loaded (and already-filtered) agents plus selection state; it never
-// calls the backend itself. Clicking a row selects that agent. Styling comes
-// from App.css class names.
+
 interface AgentsTableProps {
   agents: AgentCurrentState[];
   selectedId: number | null;
