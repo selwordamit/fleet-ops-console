@@ -52,6 +52,21 @@ body { margin: 0; }
 .foc-sync__label { font-size: 10px; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.1em; }
 .foc-sync__value { font-size: 12px; color: #c7d2e2; font-family: var(--font-mono); }
 
+/* Socket.IO connection status pill (Live / Reconnecting / Disconnected) */
+.foc-conn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--panel);
+  font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+}
+.foc-conn__dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.foc-conn--connected { color: var(--accent); border-color: rgba(94, 234, 212, 0.30); background: rgba(94, 234, 212, 0.10); }
+.foc-conn--connected .foc-conn__dot { background: var(--accent); box-shadow: 0 0 8px rgba(94, 234, 212, 0.6); }
+.foc-conn--connecting { color: var(--st-stopped); border-color: rgba(251, 146, 60, 0.30); background: rgba(251, 146, 60, 0.10); }
+.foc-conn--connecting .foc-conn__dot { background: var(--st-stopped); box-shadow: 0 0 8px rgba(251, 146, 60, 0.6); }
+.foc-conn--disconnected { color: #f87171; border-color: rgba(248, 113, 113, 0.30); background: rgba(248, 113, 113, 0.10); }
+.foc-conn--disconnected .foc-conn__dot { background: #f87171; }
+
 /* Body: three columns */
 .foc-body { flex: 1; min-height: 0; display: flex; }
 .foc-side {
