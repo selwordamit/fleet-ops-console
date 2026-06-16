@@ -358,3 +358,79 @@ Tradeoff: Resync is coarse — it replaces the whole array rather than applying 
 Impact on the project: The realtime channel is now resilient to transient disconnects and surfaces its own status, closing the WebSocket telemetry phase. The "reconnect -> REST resync replaces state" pattern is the recovery model later realtime channels (alerts, commands/ACKs) can reuse, and it keeps the backend free of replay/buffering responsibilities.
 
 Verification: Frontend `npm run build` (`tsc --noEmit && vite build`) clean; backend `python -m pytest -q` still 46 passed (no runtime code changed). Manual end-to-end with the real backend process: header shows "Live"; stopping the backend flips it to "Disconnected" then "Reconnecting"; restarting it returns to "Live"; on reconnect the dashboard re-fetches `GET /api/agents/current-state`, replaces the agents array, and corrects state with no browser refresh; `LAST SYNC` updates after resync.
+
+---
+
+## 2026-06-16 | Class-based services (AgentService / TelemetryService) with per-request construction
+
+Context: The Agent and Telemetry services were module-level functions that each took `session` (and pulled their collaborators from module imports). We wanted each service to group its related operations and its dependencies in one place, and to make future dependency injection and testing easier — a structural refactor only, no behavior change.
+
+Decision:
+
+1. Convert the function-based services into `AgentService` and `TelemetryService` classes. Each takes the request-scoped `AsyncSession` as the first constructor argument and its collaborators (repository functions, Redis reader/writer, Socket.IO emitter) as keyword arguments that **default to the real implementations**. The class stores these on `self` and its methods use them — not module globals — so the class actually holds the dependencies it uses (not a namespace).
+2. Construct one service **per request** via a small FastAPI provider (`get_agent_service` / `get_telemetry_service`) that `Depends(get_db_session)` and returns `Service(session)`. The provider lives in the API layer (route module), so the service layer never imports FastAPI.
+3. Keep the transaction boundary in the service (`commit()` + `refresh()` stay in the service methods); repositories still only add/flush/query.
+4. Promote the telemetry Redis write from a private module function (`_update_latest_state`) to a module-level `update_latest_state`, so it is injectable as the "Redis latest-state writer" dependency.
+5. Rewrite `tests/test_telemetry_service.py` to inject mocks through the constructor (instead of monkeypatching module globals) and add `tests/test_agent_service.py`, both proving constructor injection.
+
+Alternatives considered: keep function-based services (simplest, but dependencies stay implicit module imports and DI/testing relies on monkeypatching global names); introduce full repository **classes** and inject those (more abstraction than this refactor needs — repositories stay as functions per the task's scope limit); build the service once as a global/singleton (rejected — it would capture a request-scoped `AsyncSession`, leaking one request's transaction across requests); put the provider in the service module or a new `deps.py` (kept it in the route module to avoid a new abstraction and keep FastAPI concerns out of `services/`).
+
+Reason: A class groups each domain's operations with the exact dependencies they need and makes the seams explicit, so tests inject fakes through `__init__` rather than patching import names. Per-request construction binds the service to that request's session, preserving correct transaction isolation. Keeping defaults pointing at the real functions means production routes change only from "call function(session, …)" to "Service(session).method(…)" with no wiring boilerplate. Transaction ownership stays in the service for the same Unit-of-Work reason as before: multiple repository calls must be able to commit atomically.
+
+Tradeoff: Slightly more ceremony (a class + a provider) than bare functions for what is still one session per request. The keyword-argument-with-default DI is lightweight rather than a formal container; if the dependency graph grows, a more structured injection approach may be warranted. The `AgentNotFoundError` classes remain defined in both service modules (unchanged) to preserve existing route import paths.
+
+Impact on the project: Establishes the class-based service shape that Alerts and Commands services can follow, and the per-request provider pattern that future services/auth dependencies will reuse. No API behavior, schema, status code, Redis key, WebSocket contract, or logging behavior changed.
+
+Verification: `python -m pytest tests/ -q` → 49 passed (was 46; +3 from new `test_agent_service.py`, telemetry service tests unchanged at 4). App still imports (`from app.main import app, api`); the five `/api` routes and their methods are unchanged, with `/api/agents/current-state` still registered before `/api/agents/{agent_id}`; services do not import FastAPI. Live against the rebuilt backend container: `POST /api/agents` → `201`, `GET /api/agents/{id}` → `200`, missing id → `404`, `POST .../telemetry` → `201` (row persisted in Postgres, `agent:{id}:state` written in Redis), invalid status → `422`, and a Socket.IO client received `agent.telemetry.updated` with the correct payload after a telemetry POST.
+
+---
+
+## 2026-06-16 | Logging & exception-handling policy: layered exceptions, single global 500 handler, centralized logging config
+
+Context: A focused cleanup of logging and exception handling across the existing flows (Agent CRUD, telemetry ingestion, Postgres transactions, Redis reads/writes, Socket.IO). Before the change there was no central handler for unexpected exceptions (an infra failure returned Starlette's plain-text 500), services did not explicitly roll back on a DB write failure, logging config was a `basicConfig` side-effect inside `app/realtime/socket.py`, and the best-effort emit warning lacked event context.
+
+Decision:
+
+1. **One global FastAPI exception handler** (`@api.exception_handler(Exception)` in `app/main.py`) is the single application-level place that logs an unhandled exception's traceback (`logger.exception`) and returns a safe generic `{"detail": "Internal Server Error"}` 500. Internal details are never exposed. The request method + path are logged for context (the path carries the agent id for telemetry) -- no request bodies/secrets.
+2. **Layered exception responsibility, no duplicate stack traces.** Repositories do DB access only and let `SQLAlchemyError` propagate. Services own the transaction boundary: on a DB write failure they `rollback()` then re-raise **without logging** (so the global handler logs the single traceback). Routes translate expected domain failures (`AgentNotFoundError`) to HTTP 404 and do not log them again. The only service-level failure log is the best-effort Socket.IO emit warning, which is terminal (not re-raised), so it does not duplicate.
+3. **Centralized logging config.** A single guarded `logging.basicConfig` in `app/main.py` (app assembly) replaces the temporary shim in `app/realtime/socket.py`. Every module uses `logging.getLogger(__name__)`. INFO for meaningful success boundaries (agent created -- low frequency), WARNING for degraded-but-successful (best-effort emit failure, now with `event=` + `agent_id=` context), traceback only in the global handler. Telemetry-ingest success is intentionally **not** logged at INFO (high frequency -- one per agent per tick).
+
+Alternatives considered: no global handler (keep Starlette's plain-text 500 and rely solely on uvicorn's traceback -- but the error body is then inconsistent with our JSON `{"detail": ...}` shape and there is no app-owned 500 contract); a `BaseHTTPMiddleware` that catches and suppresses the exception so uvicorn never logs it (more machinery and known middleware caveats -- rejected as over-engineering); logging the DB failure in the service *and* the handler (rejected -- duplicate logs/stack traces for one exception); adding INFO logs to read paths and telemetry ingestion (rejected -- noise; "avoid logging every normal function call"); a third-party structured-logging library (rejected -- not needed for this scope).
+
+Reason: Centralizing the unexpected-exception path gives one safe, consistent 500 response and one application-level traceback, while pushing expected failures to explicit domain exceptions translated at the route keeps each layer single-purpose. Explicit service rollback makes the transaction owner's behavior correct and obvious rather than relying on session teardown. Moving logging config to app assembly removes a module-import side-effect and matches the simulator's `main.py` pattern.
+
+Tradeoff: The global `Exception` handler returns the response but Starlette re-raises internally, so the ASGI server (uvicorn) may also surface the error at its boundary -- we accept that the *application's* single traceback lives in the handler and do not try to suppress the server layer. The telemetry guarantees (Postgres commit -> Redis -> best-effort emit; Redis/Postgres failure skips emit and propagates) are unchanged -- this was a logging/exception cleanup, not a behavior change.
+
+Impact on the project: Establishes the error-handling and logging conventions that Alerts, Commands, and auth will follow (domain exceptions at the service, route translation, one global 500 handler, `getLogger(__name__)`, level discipline). No endpoint paths, schemas, status codes, Redis key format, or WebSocket contract changed.
+
+Verification: `cd backend && python -m pytest -q` -> 53 passed (was 49; +4 from new `test_routes_errors.py`: unknown-agent 404 on both routes, safe-500 with no leaked internals, healthy-list 200). Existing telemetry-service and agent-service tests still pass unchanged in behavior. App imports clean; the `Exception` handler is registered on `api`.
+
+---
+
+## 2026-06-16 | Route-layer structured logging + layered try/except + docstring policy
+
+Context: Building on the logging/exception cleanup, this step added operational observability (structured logs at the HTTP boundary), deliberate per-layer `try/except`, and `"""..."""` docstrings on the public backend surface (handlers, providers, service classes/methods, domain exceptions, realtime emitter). Focused refactor only -- no product features, no contract changes.
+
+Logging responsibilities by layer (the agreed split):
+
+- **Route** -- HTTP boundary. Logs meaningful incoming/successful low-frequency actions at INFO (`agent.create.requested`, `agent.list.completed`, `agent.current_state.completed`) and expected business failures at WARNING (`agent.get.not_found`, `telemetry.ingest.not_found`) with identifiers. It is the single place the not-found condition is logged.
+- **Service** -- business flow + transaction. Logs only meaningful outcomes: `agent.created` (INFO) and the terminal best-effort `telemetry_emit_failed` (WARNING). On a DB write failure it rolls back and re-raises **without** logging.
+- **Repository/cache** -- data access only; no logging; infrastructure exceptions propagate.
+- **Global handler** -- the one place an unhandled exception's traceback is logged (`logger.exception`), returning a safe JSON 500.
+
+All structured logs use a short event-token message plus `extra={"event": ..., "agent_id"/"count": ...}` so a future JSON handler can index them; the payload/request body and the telemetry body are never logged.
+
+Decisions and reasons:
+
+- **Why not broad `try/except Exception` in every route:** only *expected* domain exceptions (`AgentNotFoundError`) are caught and translated to HTTP; everything else must reach the global handler so failures are not silently swallowed and are logged once with a traceback. Broad catches would hide bugs and fragment error handling.
+- **Why tracebacks are logged once:** the not-found is logged at the route (no service duplicate); DB failures are rolled back and re-raised unlogged so only the global handler prints the trace; the emit failure is terminal (not re-raised) so its single WARNING+traceback lives in the service. No layer both logs a trace and re-raises.
+- **Why telemetry success is not logged at INFO:** ingestion is high-frequency (one per agent per tick, ~N agents every few seconds); a per-event INFO would flood logs and bury signal. Only the expected unknown-agent rejection is logged; unexpected failures rely on service/global logging.
+- **Docstring policy:** concise `"""..."""` added to every route handler, the global exception handler, both service providers, both service classes and their public methods, both `AgentNotFoundError` classes, and the realtime connect/disconnect handlers and `emit_agent_telemetry_updated`. Skipped: trivial private helpers (`_envelope`), `__init__` (DI explained on the class), constants. Docstrings state responsibility, side effects, meaningful exceptions, and non-obvious return meaning -- not tutorials, and never repeating the function name.
+
+Alternatives considered: log the not-found in the service as well (rejected -- duplicate log for one condition); add a success INFO to telemetry ingest (rejected -- log flooding); put method/path only in `extra` for the global handler (kept them in the readable message too, since the traceback needs visible context); a JSON logging formatter/library now (deferred -- `extra` fields are already attached; formatting can change later without touching call sites).
+
+Tradeoff: with the current default text formatter the `extra` fields are attached to the record but not printed, so human-readable console output shows the event token without the ids until a structured formatter is added. Accepted: the data is present on the record (and asserted in tests), and adding a JSON formatter later is a config-only change.
+
+Impact: Establishes the route/service/handler logging contract and docstring conventions that Alerts, Commands, and auth will follow. No endpoint paths, schemas, status codes, Redis key format, WebSocket contract, or telemetry ordering changed.
+
+Verification: `cd backend && python -m pytest -q` -> 55 passed (was 53; +2: AgentService DB-failure rollback test, and route INFO-success / telemetry no-INFO tests). Covered: domain exception -> 404 + single structured WARNING; unexpected error -> JSON 500 with no leaked internals; low-frequency success -> INFO; telemetry success -> no INFO from route/service; emit failure -> one WARNING with `event`+`agent_id` and ingestion still 201.

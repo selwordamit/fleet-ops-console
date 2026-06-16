@@ -10,11 +10,7 @@ from app.schemas.realtime import (
     AgentTelemetryUpdatedPayload,
 )
 
-if not logging.getLogger().handlers:
-    logging.basicConfig(level=logging.INFO)
-
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 sio = socketio.AsyncServer(
     async_mode="asgi",  # so it can be wrapped by socketio.ASGIApp alongside FastAPI
@@ -33,6 +29,7 @@ def _envelope(event_type: str, payload: dict) -> dict:
 
 @sio.event
 async def connect(sid: str, environ: dict, auth: dict | None = None) -> None:
+    """Log a new Socket.IO connection and send the client a readiness envelope."""
 
     logger.info("Socket.IO client connected: sid=%s", sid)
 
@@ -43,6 +40,7 @@ async def connect(sid: str, environ: dict, auth: dict | None = None) -> None:
 
 @sio.event
 async def disconnect(sid: str) -> None:
+    """Log a Socket.IO disconnection at the channel boundary."""
 
     logger.info("Socket.IO client disconnected: sid=%s", sid)
 
@@ -54,6 +52,12 @@ async def emit_agent_telemetry_updated(
     telemetry: Telemetry,
     request_id: str | None = None,
 ) -> None:
+    """Broadcast the agent.telemetry.updated event built from a persisted row.
+
+    Sends the contract envelope to every connected client (no rooms). Side effect
+    only; callers stay transport-agnostic. Exceptions propagate to the caller,
+    which applies the best-effort policy.
+    """
 
     event = AgentTelemetryUpdatedEvent(
         payload=AgentTelemetryUpdatedPayload(
