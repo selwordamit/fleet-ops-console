@@ -36,8 +36,12 @@ services:
     build: ./frontend
     ports:
       - "5173:5173"
-    profiles:
-      - frontend
+    environment:
+      # Inside the container, localhost has no backend; reach it by service name.
+      VITE_PROXY_TARGET: http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
 
   postgres:
     image: postgres:16-alpine
