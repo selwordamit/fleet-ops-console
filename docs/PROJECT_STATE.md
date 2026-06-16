@@ -163,6 +163,14 @@ Observability/documentation refactor on top of the logging/exception cleanup; no
 - Logging stays `getLogger(__name__)`; config remains centralized in `main.py` (no `basicConfig` outside it).
 - Tests: `tests/test_routes_errors.py` expanded (warning logs, INFO-success, telemetry no-INFO), `tests/test_agent_service.py` gains a DB-failure rollback test, `tests/test_telemetry_service.py` asserts the structured emit WARNING. Full suite: **55 passed**.
 
+### WebSocket frontend hardening — env-based socket URL + unknown-agent recovery ✓
+
+Frontend-only (`socket.ts`, `App.tsx`, `vite-env.d.ts`, `.env.example`, `.gitignore`); no backend, contract, or Docker change.
+
+- **Env-based socket URL (Checkpoint A):** `socket.ts` reads `import.meta.env.VITE_SOCKET_URL` (no hardcoded origin in runtime code) and **fails fast** with a clear error if it is missing. `frontend/.env.example` documents it; `frontend/.gitignore` ignores `.env`/`.env.local`/`.env.*` while keeping `.env.example`. `vite-env.d.ts` types the var. The REST `/api` Vite proxy is unchanged (Socket.IO uses `/socket.io/`, not the proxy).
+- **Unknown-agent recovery (Checkpoint B):** an `agent.telemetry.updated` event for an `agent_id` not in the snapshot triggers a single **deduplicated** re-fetch of `GET /api/agents/current-state` that **replaces** the agents array — no partial agent appended (the event has no `name`/`type`). Reconnect resync and unknown-agent recovery share one `resyncCurrentState` function guarded by an in-flight `useRef`, so repeated/concurrent triggers cause at most one REST request; a failed resync preserves state and logs the reason (incl. `agent_id`). Known-vs-unknown is decided via an `agentsRef` mirror **outside** the state updater (no network side effects in updaters; StrictMode-safe). Known-agent events keep the incremental immutable `latest_state` replace.
+- Verified: `npm run build` passes; env injection confirmed via a sentinel build and fail-fast confirmed via a no-env build; the new-agent data path (post-snapshot register → socket emit → fresh current-state includes it) verified live against the backend. Backend untouched: **55 passed**.
+
 ---
 
 ## Key Decisions
@@ -317,7 +325,7 @@ Notes:
 - No telemetry-history read API yet.
 - No User, Alert, or Command models yet.
 - Telemetry is a single simple table; no partitioning or retention yet (deferred scalability work).
-- WebSocket: `agent.telemetry.updated` is emitted end-to-end, the frontend applies it live, a **connection-status indicator** is shown, and a real reconnect now triggers a **REST resync** that replaces the agents array with the authoritative snapshot — but pieces remain deferred: the backend socket URL is **hardcoded** (`http://localhost:8000`, no env-based config), late-registered agents are still ignored (an unknown `agent_id` over the socket is not appended), the socket is **unauthenticated** (dev CORS `*`), there is no UI backpressure/throttling, and it is single-worker only (no Redis pub/sub fan-out).
+- WebSocket: `agent.telemetry.updated` is emitted end-to-end, the frontend applies it live, a **connection-status indicator** is shown, a real reconnect triggers a **REST resync**, the backend socket URL is now **env-based** (`VITE_SOCKET_URL`, fail-fast if missing), and **late-registered (unknown) agents** are now recovered via a deduplicated current-state resync (shared with reconnect; no partial agent appended). Pieces still deferred: the socket is **unauthenticated** (dev CORS `*`), there is no UI backpressure/throttling, and it is single-worker only (no Redis pub/sub fan-out).
 - Frontend gaps remain: live state is held in `useState` (no TanStack Query/Zustand yet); beyond the initial snapshot + live socket merge there is no manual refresh/polling, no routing, and no auth; and there is still **no frontend Dockerfile** (the `frontend` Compose service stays behind a `frontend` profile, not built). The map is now a **real Leaflet map** and live WebSocket updates work — both previously listed here as missing. Under React `StrictMode` the mount effects double-fire in dev (harmless; absent in production).
 - No alerts or commands (no command creation, no ACK flow).
 - No auth/JWT/RBAC.
@@ -345,7 +353,7 @@ Known simulator tradeoffs:
 
 The next checkpoint will be chosen before implementation — candidates:
 
-- WebSocket hardening (remaining): handling agents registered after initial load (unknown `agent_id`s are still ignored), socket auth, env-based socket URL, UI throttling/backpressure, and Redis pub/sub multi-worker fan-out. (Connection-status indicator and reconnect re-sync are now done.)
+- WebSocket hardening (remaining): socket auth, UI throttling/backpressure, and Redis pub/sub multi-worker fan-out. (Connection-status indicator, reconnect re-sync, env-based socket URL, and unknown-agent recovery are now done.)
 - Migrate live state to **Zustand** (per the frontend rules) once it outgrows `App.tsx`.
 - Alerts (build-order Step 9): rules, evaluation, persistence, and alert WebSocket events (reuse the emit pattern).
 - Telemetry history read API (for charts).

@@ -122,11 +122,23 @@ This hardening sits on top of the live-push MVP. It is **frontend-only**
   reconnect the dashboard re-fetches `current-state`, replaces the agents array,
   and corrects any state missed during the outage — no browser refresh.
 
+## Unknown-agent recovery & env-based socket URL (completed)
+
+- **Env-based socket URL.** The backend Socket.IO origin is read from
+  `import.meta.env.VITE_SOCKET_URL` (see `frontend/.env.example`); the client
+  fails fast if it is missing rather than connecting to an implicit origin. No
+  hardcoded origin remains in runtime code.
+- **Unknown-agent recovery.** An `agent.telemetry.updated` event for an
+  `agent_id` not in the snapshot triggers a single, deduplicated re-fetch of
+  `GET /api/agents/current-state` that replaces the whole agents array (no
+  partial agent is appended, since the event lacks `name`/`type`). Reconnect
+  resync and unknown-agent recovery share one resync function guarded by an
+  in-flight ref, so concurrent/repeated triggers cause at most one REST request;
+  a failed resync preserves state and logs the reason (incl. the `agent_id`).
+  Once the snapshot includes the agent, its later events use the incremental path.
+
 ## Deferred items (hardening still open)
 
-- Unknown-agent handling (events for agents not in the snapshot are ignored; a
-  new agent appears only via the next snapshot/resync).
-- Env-based socket URL (the backend origin is currently hardcoded).
 - Socket authentication / RBAC on socket actions.
 - Redis pub/sub fan-out for multiple backend workers.
 - UI backpressure / throttling.

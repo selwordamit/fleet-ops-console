@@ -160,9 +160,13 @@ REST remains the way the dashboard snapshot is loaded; the WebSocket event is th
 way that snapshot is kept live afterward. The two share the `latest_state` shape
 on purpose.
 
-Handling an event for an `agent_id` not present in the current snapshot (e.g. an
-agent registered after load) is **deferred** to a later checkpoint; this contract
-covers updates to agents already known to the client.
+Handling an event for an `agent_id` **not** present in the current snapshot (e.g.
+an agent registered after load) is now supported: because the event carries no
+stable identity (`name`/`type`), the client does **not** construct a partial
+agent. Instead the first such event triggers a single, deduplicated re-fetch of
+`GET /api/agents/current-state` and replaces the whole agents array; subsequent
+events for that now-known agent take the normal incremental path. The event
+payload is unchanged — this is purely client recovery behavior.
 
 ---
 
