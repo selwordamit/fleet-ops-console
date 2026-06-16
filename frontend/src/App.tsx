@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import "./App.css";
 import { getCurrentState } from "./api/agents";
@@ -56,6 +56,14 @@ export default function App() {
   // Starts as "connecting": the socket effect calls socket.connect() on mount.
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
 
+  // Mirror of `agents` for synchronous reads inside the once-registered socket
+  // handlers (which would otherwise close over stale state). Kept in lockstep by
+  // the effect below and eagerly on resync.
+  const agentsRef = useRef<AgentCurrentState[] | null>(null);
+  // Guards against overlapping current-state resyncs (a reconnect and/or repeated
+  // unknown-agent events): at most one REST resync is in flight at a time.
+  const resyncInProgressRef = useRef(false);
+
   useEffect(() => {
     getCurrentState()
       .then((data) => {
@@ -65,11 +73,43 @@ export default function App() {
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
 
+  // Keep the ref aligned with state so socket handlers always see the latest agents.
+  useEffect(() => {
+    agentsRef.current = agents;
+  }, [agents]);
+
   // Socket.IO lifecycle for the whole App. The client connects, receives
   // agent.telemetry.updated events, and applies each latest_state to the
   // existing React agents state so the map, list, and details update live.
   // Named handlers give stable references so cleanup can remove exactly these.
   useEffect(() => {
+    // Shared, deduplicated current-state resync used by BOTH a successful
+    // reconnect and unknown-agent recovery. REST current-state is authoritative,
+    // so the whole agents array is replaced (not merged). At most one resync is in
+    // flight at a time; overlapping triggers are skipped. Failures preserve the
+    // current state and are logged with the reason (including any unknown agent_id).
+    function resyncCurrentState(reason: string) {
+      if (resyncInProgressRef.current) {
+        console.log("[socket] current-state resync skipped (in progress):", reason);
+        return;
+      }
+      resyncInProgressRef.current = true;
+      getCurrentState()
+        .then((data) => {
+          // Eagerly align the ref so an event arriving right after this resync
+          // already sees the new agent as known (closes the dedup window).
+          agentsRef.current = data;
+          setAgents(data);
+          setLastSync(new Date());
+        })
+        .catch((err) => {
+          console.error("[socket] current-state resync failed:", reason, err);
+        })
+        .finally(() => {
+          resyncInProgressRef.current = false;
+        });
+    }
+
     function onConnect() {
       console.log("[socket] connected:", socket.id);
       setStatus("connected");
@@ -91,35 +131,38 @@ export default function App() {
     }
     function onReconnect(attempt: number) {
       console.log("[socket] reconnected after attempt:", attempt);
-      // REST current-state is authoritative: replace (not merge) the agents
-      // array to recover any telemetry missed while disconnected. On failure,
-      // keep the existing state and log — never crash the dashboard.
-      getCurrentState()
-        .then((data) => {
-          setAgents(data);
-          setLastSync(new Date());
-        })
-        .catch((err) => {
-          console.error("[socket] resync after reconnect failed:", err);
-        });
+      // Recover any telemetry missed while disconnected via the shared,
+      // deduplicated authoritative snapshot resync.
+      resyncCurrentState("reconnect");
     }
     function onTelemetryUpdated(event: AgentTelemetryUpdatedEvent) {
       console.log("[socket] agent.telemetry.updated:", event);
 
       const { agent_id, latest_state } = event.payload;
-      // Functional update: read React's latest agents, not the value captured
-      // when this once-only effect mounted.
-      setAgents((currentAgents) => {
-        if (currentAgents === null) return currentAgents;
-        // Unknown agent id (not in the loaded snapshot): leave state unchanged
-        // for this checkpoint, so React does not re-render.
-        if (!currentAgents.some((a) => a.id === agent_id)) return currentAgents;
-        // Immutable replace: new array, new object only for the matching agent,
-        // all other agents returned by reference unchanged.
-        return currentAgents.map((a) =>
-          a.id === agent_id ? { ...a, latest_state } : a,
+
+      // Decide known-vs-unknown OUTSIDE the state updater: updaters must be pure
+      // and may run twice under StrictMode, so no network side effects belong in
+      // them. agentsRef gives the latest agents without a stale closure.
+      const current = agentsRef.current;
+      if (current === null) return; // snapshot not loaded yet — ignore until it is
+
+      if (current.some((a) => a.id === agent_id)) {
+        // Known agent: immutable replace of only this agent's latest_state.
+        setAgents((currentAgents) =>
+          currentAgents === null
+            ? currentAgents
+            : currentAgents.map((a) =>
+                a.id === agent_id ? { ...a, latest_state } : a,
+              ),
         );
-      });
+        return;
+      }
+
+      // Unknown agent (not in the snapshot). The event carries no stable identity
+      // (name/type), so we must NOT append a partial agent. Fetch the authoritative
+      // current-state once (deduplicated); subsequent events for this agent then
+      // take the incremental path above.
+      resyncCurrentState(`unknown agent_id=${agent_id}`);
     }
 
     // Register before connecting so the immediate connect/connection.ready

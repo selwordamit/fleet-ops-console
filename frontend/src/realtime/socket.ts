@@ -7,12 +7,19 @@
 
 import { io, type Socket } from "socket.io-client";
 
-// Backend origin in local development. Hardcoded for the MVP (no env vars yet).
-// Socket.IO uses the /socket.io/ path, which the Vite dev proxy does not handle,
-// so we target the backend directly instead of a same-origin relative path.
-const BACKEND_URL = "http://localhost:8000";
 
-export const socket: Socket = io(BACKEND_URL, {
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL;
+
+if (!SOCKET_URL) {
+
+  
+  throw new Error(
+    "VITE_SOCKET_URL is not set. Create frontend/.env.local from " +
+      "frontend/.env.example (e.g. VITE_SOCKET_URL=http://localhost:8000).",
+  );
+}
+
+export const socket: Socket = io(SOCKET_URL, {
   // React opens/closes the connection; module import must have no side effect.
   autoConnect: false,
   // Prefer a WebSocket; fall back to HTTP long-polling where WS is unavailable.

@@ -1,3 +1,8 @@
 node_modules
 dist
 *.local
+
+# Local environment files: never commit real config. Keep the checked-in example.
+.env
+.env.*
+!.env.example
