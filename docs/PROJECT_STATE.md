@@ -132,6 +132,37 @@ Documentation/verification closeout of the WebSocket phase, built on the live-pu
 - **Cleanup**: the effect removes every listener via its named handler reference, including the two Manager listeners (`reconnect_attempt`, `reconnect`), then disconnects — so React `StrictMode` does not accumulate duplicate listeners or trigger a duplicate resync.
 - Incremental `agent.telemetry.updated` updates and the "unknown agent ids ignored" behavior are unchanged.
 
+### Refactor — class-based Agent/Telemetry services ✓
+
+Structural refactor only; no API behavior, schema, status code, Redis key, WebSocket contract, or logging change.
+
+- Function-based services are now `AgentService` (`create_agent`, `get_agents`, `get_agent_by_id`, `get_current_state`) and `TelemetryService` (`ingest_telemetry`) in `app/services/`. Each takes the request-scoped `AsyncSession` as the first constructor arg; collaborators (repository functions, Redis reader/writer, Socket.IO emitter) are keyword args defaulting to the real implementations, stored on `self` and used by the methods.
+- Routes construct **one service per request** via small FastAPI providers (`get_agent_service` / `get_telemetry_service`, `Depends(get_db_session)`) defined in the route modules — so the service layer never imports FastAPI and no global object holds a request-scoped session. Routes stay thin.
+- Transaction ownership unchanged: the service still calls `commit()`/`refresh()`; repositories still only add/flush/query.
+- The telemetry Redis write is now a module-level `update_latest_state` (was private `_update_latest_state`) so it is injectable as the latest-state writer dependency.
+- Tests: `tests/test_telemetry_service.py` rewritten to inject mocks through the constructor (same 4 scenarios/ordering); new `tests/test_agent_service.py` proves `AgentService` DI (commit/refresh, 404, current-state merge). Full suite: **49 passed**.
+
+### Cleanup — backend logging & exception handling ✓
+
+Logging/exception-handling cleanup for the existing flows; no API behavior, schema, status code, Redis key, or WebSocket contract change.
+
+- **Global 500 handler:** `@api.exception_handler(Exception)` in `app/main.py` logs each unhandled exception's traceback once (method + path context) and returns a safe `{"detail": "Internal Server Error"}` — no internal details exposed. Expected failures (`AgentNotFoundError`) are still translated to 404 in the routes and never reach it.
+- **Layered exceptions, no duplicate stack traces:** repositories stay DB-only and let `SQLAlchemyError` propagate; services own the transaction and now `rollback()` + re-raise (without logging) on a DB write failure; routes translate domain exceptions; the only service failure log is the terminal best-effort emit warning (now with `event=` + `agent_id=`).
+- **Centralized logging config:** one guarded `logging.basicConfig` in `app/main.py` replaced the `basicConfig` shim in `app/realtime/socket.py`; all modules use `logging.getLogger(__name__)`. INFO only on the low-frequency agent-create boundary; telemetry-ingest success is deliberately not INFO-logged (high frequency).
+- **Telemetry guarantees unchanged:** Postgres commit → Redis → best-effort emit; a Redis/Postgres failure skips the emit and propagates.
+- Tests: new `tests/test_routes_errors.py` (unknown-agent 404 on both routes, safe-500 with no leaked internals, healthy-list 200). Full suite: **53 passed**.
+
+### Cleanup — route observability, layered try/except, docstrings ✓
+
+Observability/documentation refactor on top of the logging/exception cleanup; no contract, schema, status-code, Redis-key, or telemetry-ordering change.
+
+- **Structured route logs:** routes now log at the HTTP boundary using a short event-token message + `extra={"event", "agent_id"/"count"}`. INFO for low-frequency success (`agent.create.requested`, `agent.list.completed`, `agent.current_state.completed`); WARNING for expected failures (`agent.get.not_found`, `telemetry.ingest.not_found`). The not-found condition is logged **once**, at the route. Request/telemetry bodies are never logged.
+- **High-frequency telemetry:** successful ingestion is deliberately **not** INFO-logged (flood avoidance); only the unknown-agent rejection is logged.
+- **Layered try/except:** routes catch only expected domain exceptions (`AgentNotFoundError`) and translate to 404; everything else propagates to the global handler. Services roll back + re-raise unlogged on DB failure; the best-effort emit logs one terminal WARNING (`event` + `agent_id`). No broad `except Exception` in routes.
+- **Docstrings:** `"""..."""` added across the public backend surface — every route handler, the global exception handler, both service providers, both service classes + public methods, both `AgentNotFoundError` classes, and the realtime connect/disconnect handlers + `emit_agent_telemetry_updated`. Skipped trivial private helpers, constants, and `__init__`.
+- Logging stays `getLogger(__name__)`; config remains centralized in `main.py` (no `basicConfig` outside it).
+- Tests: `tests/test_routes_errors.py` expanded (warning logs, INFO-success, telemetry no-INFO), `tests/test_agent_service.py` gains a DB-failure rollback test, `tests/test_telemetry_service.py` asserts the structured emit WARNING. Full suite: **55 passed**.
+
 ---
 
 ## Key Decisions
@@ -150,6 +181,8 @@ Documentation/verification closeout of the WebSocket phase, built on the live-pu
 - Frontend: REST/server data is fetched through a typed API client and the backend stays the gatekeeper (client never reads Redis). Styling lives in a dedicated CSS file with system fonts (no inline style strings, no external font CDN, no UI library). TanStack Query/Zustand/Leaflet are deferred until their realtime/caching/map benefits are actually needed.
 - WebSocket: the backend emits `agent.telemetry.updated` only **after** Postgres commit and the Redis write succeed, and the emit is **best-effort** (a Socket.IO failure logs but never fails ingestion or rolls back). Event schemas live in a dedicated `app/schemas/realtime.py`, separate from REST/DB models, reusing the shared `AgentStatus` enum.
 - Frontend live state is held in the **existing `useState` agents array** (events merged immutably), not Zustand — a deliberate MVP deviation from the `CLAUDE.md` "Socket.IO state in Zustand" rule, to be revisited when live state outgrows `App.tsx`. One shared Socket.IO client with `autoConnect: false` so React owns the connection lifecycle.
+- Services are **class-based** (`AgentService`, `TelemetryService`) constructed **per request** by a thin FastAPI provider bound to the request-scoped session — never a global singleton holding a session. Dependencies are injected via constructor keyword args (defaulting to the real functions); the service still owns the transaction boundary. Repositories stay function-based (no repository classes introduced).
+- Error handling is **layered**: repositories let `SQLAlchemyError` propagate; services own the transaction (rollback + re-raise on DB write failure) and raise domain exceptions (`AgentNotFoundError`); routes translate domain exceptions to HTTP (404); a single global `Exception` handler in `app/main.py` logs unexpected exceptions once and returns a safe JSON 500. Logging is centralized (one guarded `basicConfig` in `app/main.py`, `getLogger(__name__)` everywhere), with level discipline (INFO only at meaningful low-frequency boundaries; no INFO on high-frequency telemetry ingest).
 
 ---
 

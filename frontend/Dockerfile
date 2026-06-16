@@ -2,8 +2,8 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install deps first so this layer is cached unless the lockfile changes.
 COPY package.json package-lock.json ./
+
 RUN npm ci
 
 COPY . .

@@ -1,10 +1,9 @@
-"""Unit tests for ingest_telemetry orchestration and its Socket.IO emit step.
+"""Unit tests for TelemetryService.ingest_telemetry orchestration and emit step.
 
-These are pure orchestration tests: every external dependency (agent lookup,
-Postgres insert, Redis mirror, Socket.IO emit) is mocked, so no live Postgres,
-Redis, or Socket.IO server is needed. Dependencies are patched on
-app.services.telemetry because ingest_telemetry calls them via names bound into
-that module, not where they were originally defined.
+Pure orchestration tests: every collaborator (agent lookup, Postgres insert,
+Redis mirror, Socket.IO emit) is injected into the service constructor as a
+mock, so no live Postgres, Redis, or Socket.IO server is needed. Building the
+service this way also proves its dependencies are constructor-injectable.
 """
 
 import asyncio
@@ -14,39 +13,37 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-import app.services.telemetry as svc
 from app.models.telemetry import Telemetry
 from app.schemas.telemetry import TelemetryCreate
+from app.services.telemetry import AgentNotFoundError, TelemetryService
 
 
 @pytest.fixture
-def mocks(monkeypatch):
-    """Patch all of ingest_telemetry's collaborators with success defaults.
-
-    Individual tests override a single mock (e.g. make Redis raise) to exercise
-    one failure path at a time.
-    """
+def mocks():
+    """Success-path collaborators; individual tests override one to fail."""
 
     row = Telemetry(agent_id=7)
-
-    get_agent = AsyncMock(return_value=object())          # non-None => agent exists
-    insert_telemetry = AsyncMock(return_value=row)
-    update_latest_state = AsyncMock()                     # stands in for the Redis write
-    emit = AsyncMock()
-
-    monkeypatch.setattr(svc, "get_agent", get_agent)
-    monkeypatch.setattr(svc, "insert_telemetry", insert_telemetry)
-    monkeypatch.setattr(svc, "_update_latest_state", update_latest_state)
-    monkeypatch.setattr(svc, "emit_agent_telemetry_updated", emit)
 
     return SimpleNamespace(
         row=row,
         session=AsyncMock(),                              # commit()/refresh() are awaitable no-ops
         payload=TelemetryCreate(lat=32.0, lng=34.8, speed=12.5, battery=80, status="en-route"),
-        get_agent=get_agent,
-        insert_telemetry=insert_telemetry,
-        update_latest_state=update_latest_state,
-        emit=emit,
+        get_agent=AsyncMock(return_value=object()),      # non-None => agent exists
+        insert_telemetry=AsyncMock(return_value=row),
+        update_latest_state=AsyncMock(),                 # stands in for the Redis write
+        emit=AsyncMock(),
+    )
+
+
+def make_service(mocks) -> TelemetryService:
+    """Construct the service with every collaborator injected (DI under test)."""
+
+    return TelemetryService(
+        mocks.session,
+        get_agent=mocks.get_agent,
+        insert_telemetry=mocks.insert_telemetry,
+        update_latest_state=mocks.update_latest_state,
+        emit_telemetry_updated=mocks.emit,
     )
 
 
@@ -56,7 +53,7 @@ def test_successful_ingestion_emits_once_with_persisted_row(mocks):
     order.attach_mock(mocks.update_latest_state, "redis")
     order.attach_mock(mocks.emit, "emit")
 
-    result = asyncio.run(svc.ingest_telemetry(mocks.session, 7, mocks.payload))
+    result = asyncio.run(make_service(mocks).ingest_telemetry(7, mocks.payload))
 
     assert result is mocks.row
     mocks.insert_telemetry.assert_awaited_once()
@@ -71,7 +68,7 @@ def test_redis_failure_propagates_and_skips_emit(mocks):
     mocks.update_latest_state.side_effect = RuntimeError("redis down")
 
     with pytest.raises(RuntimeError, match="redis down"):
-        asyncio.run(svc.ingest_telemetry(mocks.session, 7, mocks.payload))
+        asyncio.run(make_service(mocks).ingest_telemetry(7, mocks.payload))
 
     # Persistence happened, but the event must not fire on un-mirrored state.
     mocks.insert_telemetry.assert_awaited_once()
@@ -82,20 +79,27 @@ def test_emit_failure_is_best_effort_and_logs(mocks, caplog):
     mocks.emit.side_effect = RuntimeError("socket boom")
 
     with caplog.at_level(logging.WARNING, logger="app.services.telemetry"):
-        result = asyncio.run(svc.ingest_telemetry(mocks.session, 7, mocks.payload))
+        result = asyncio.run(make_service(mocks).ingest_telemetry(7, mocks.payload))
 
     # Persistence already succeeded, so ingestion still returns the stored row.
     assert result is mocks.row
     mocks.emit.assert_awaited_once_with(mocks.row)
-    assert "agent_id=7" in caplog.text
-    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    # Structured WARNING carrying the event name and agent_id, logged exactly once.
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and getattr(r, "event", None) == "agent.telemetry.updated"
+        and getattr(r, "agent_id", None) == 7
+    ]
+    assert len(warnings) == 1
 
 
 def test_unknown_agent_raises_before_any_side_effects(mocks):
     mocks.get_agent.return_value = None
 
-    with pytest.raises(svc.AgentNotFoundError):
-        asyncio.run(svc.ingest_telemetry(mocks.session, 7, mocks.payload))
+    with pytest.raises(AgentNotFoundError):
+        asyncio.run(make_service(mocks).ingest_telemetry(7, mocks.payload))
 
     mocks.insert_telemetry.assert_not_awaited()
     mocks.update_latest_state.assert_not_awaited()

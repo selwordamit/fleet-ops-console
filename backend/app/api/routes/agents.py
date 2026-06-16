@@ -1,17 +1,26 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
 from app.schemas.agent import AgentCreate, AgentCurrentState, AgentRead
-from app.services.agent import (
-    AgentNotFoundError,
-    create_agent,
-    get_agent_by_id,
-    get_agents,
-    get_current_state,
-)
+from app.services.agent import AgentNotFoundError, AgentService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def get_agent_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> AgentService:
+    """Provide an AgentService bound to the request-scoped database session.
+
+    One instance per request; never a global singleton that would hold a stale
+    or shared session.
+    """
+    return AgentService(session)
 
 
 @router.post(
@@ -21,31 +30,58 @@ router = APIRouter()
 )
 async def post_agent(
     payload: AgentCreate,
-    session: AsyncSession = Depends(get_db_session),
+    service: AgentService = Depends(get_agent_service),
 ) -> AgentRead:
-    return await create_agent(session, payload)
+    """Register a new agent and return the persisted record (HTTP 201).
+
+    The request body is not logged; the service logs the created agent id as the
+    business outcome.
+    """
+    logger.info("agent_create_requested", extra={"event": "agent.create.requested"})
+    return await service.create_agent(payload)
 
 
 @router.get("/agents", response_model=list[AgentRead])
 async def list_all_agents(
-    session: AsyncSession = Depends(get_db_session),
+    service: AgentService = Depends(get_agent_service),
 ) -> list[AgentRead]:
-    return await get_agents(session)
+    """Return all registered agents (newest first)."""
+    agents = await service.get_agents()
+    logger.info(
+        "agents_listed",
+        extra={"event": "agent.list.completed", "count": len(agents)},
+    )
+    return agents
 
 
 @router.get("/agents/current-state", response_model=list[AgentCurrentState])
 async def list_current_state(
-    session: AsyncSession = Depends(get_db_session),
+    service: AgentService = Depends(get_agent_service),
 ) -> list[AgentCurrentState]:
-    return await get_current_state(session)
+    """Return each agent merged with its latest cached state for the live view."""
+    states = await service.get_current_state()
+    logger.info(
+        "agents_current_state_listed",
+        extra={"event": "agent.current_state.completed", "count": len(states)},
+    )
+    return states
 
 
 @router.get("/agents/{agent_id}", response_model=AgentRead)
 async def get_one_agent(
     agent_id: int,
-    session: AsyncSession = Depends(get_db_session),
+    service: AgentService = Depends(get_agent_service),
 ) -> AgentRead:
+    """Return one registered agent or translate a missing agent into HTTP 404.
+
+    The expected unknown-agent case is logged once here (WARNING) at the HTTP
+    boundary; the service raises the domain exception without logging it.
+    """
     try:
-        return await get_agent_by_id(session, agent_id)
+        return await service.get_agent_by_id(agent_id)
     except AgentNotFoundError as exc:
+        logger.warning(
+            "agent_not_found",
+            extra={"event": "agent.get.not_found", "agent_id": agent_id},
+        )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
