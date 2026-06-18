@@ -7,3 +7,13 @@ class AgentStatus(str, Enum):
     en_route = "en-route"
     stopped = "stopped"
     offline = "offline"
+
+
+class AlertType(str, Enum):
+
+    low_battery = "low_battery"
+
+
+class AlertSeverity(str, Enum):
+
+    warning = "warning"

@@ -82,10 +82,6 @@ class TelemetryService:
         if await self._get_agent(self._session, agent_id) is None:
             raise AgentNotFoundError(agent_id)
 
-        # 1) Postgres first (durable source of truth). On a write failure, roll
-        #    back and propagate to the global handler — no logging here (avoids a
-        #    duplicate stack trace). Redis is NOT rolled back: it is only written
-        #    after a successful commit.
         try:
             telemetry = await self._insert_telemetry(self._session, agent_id, payload)
             await self._session.commit()
@@ -94,18 +90,12 @@ class TelemetryService:
             raise
         await self._session.refresh(telemetry)
 
-        # 2) Redis latest-state. A failure here propagates (skipping the emit), so
-        #    no event ever describes state the cache does not reflect.
         await self._update_latest_state(telemetry)
 
-        # 3) Socket.IO emit, best-effort: a push failure must not fail ingestion,
-        #    so it is logged once here (terminal — not re-raised) with event +
-        #    agent context and returns the already-stored row.
         try:
             await self._emit_telemetry_updated(telemetry)
         except Exception:
-            # Terminal best-effort log (not re-raised): the only place this emit
-            # failure is recorded, so the traceback is captured here once.
+
             logger.warning(
                 "telemetry_emit_failed",
                 extra={"event": TELEMETRY_UPDATED_EVENT, "agent_id": telemetry.agent_id},
