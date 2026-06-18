@@ -16,5 +16,4 @@ async def insert_telemetry(
         status=payload.status,
     )
     session.add(row)
-    await session.flush()
     return row
