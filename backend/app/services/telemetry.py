@@ -47,7 +47,7 @@ class TelemetryService:
     Constructed once per request, bound to the request-scoped ``AsyncSession``
     (see the route provider). The agent lookup, telemetry insert, Redis writer,
     and Socket.IO emitter are injected as keyword arguments defaulting to the real
-    implementations, so tests can substitute fakes. The service owns the
+    implementations, so tests can substitute fakes. The repository owns the
     transaction boundary; the WebSocket emit is best-effort.
     """
 
@@ -71,19 +71,19 @@ class TelemetryService:
     ) -> Telemetry:
         """Persist telemetry, refresh the Redis latest-state, and emit the live event.
 
-        Fixed ordering: verify agent exists -> insert -> commit -> refresh ->
-        Redis write -> Socket.IO emit. Owns the transaction (rolls back on a DB
-        failure and re-raises). The emit is best-effort: a push failure logs a
-        WARNING and does not change the successful response, while a Redis or
-        Postgres failure propagates and skips the emit. Raises AgentNotFoundError
-        for an unknown agent.
+        Fixed ordering: verify agent exists -> insert (repository commits) ->
+        Redis write -> Socket.IO emit. The emit is best-effort: a push failure
+        logs a WARNING and does not change the successful response, while a Redis
+        or Postgres failure propagates and skips the emit. Raises
+        AgentNotFoundError for an unknown agent.
         """
 
         if await self._get_agent(self._session, agent_id) is None:
             raise AgentNotFoundError(agent_id)
 
+        telemetry = await self._insert_telemetry(self._session, agent_id, payload)
+
         try:
-            telemetry = await self._insert_telemetry(self._session, agent_id, payload)
             await self._session.commit()
         except SQLAlchemyError:
             await self._session.rollback()

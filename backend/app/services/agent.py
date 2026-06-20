@@ -43,14 +43,9 @@ class AgentService:
         self._read_agent_state = read_agent_state
 
     async def create_agent(self, payload: AgentCreate) -> Agent:
-        """Persist a new agent and return the refreshed database row.
-
-        Owns the transaction boundary: rolls back on a database failure and
-        re-raises so the global handler logs the traceback once (no logging
-        here). Logs the created agent id as the business outcome.
-        """
+        """Persist a new agent and return the refreshed database row."""
+        agent = await self._insert_agent(self._session, payload)
         try:
-            agent = await self._insert_agent(self._session, payload)
             await self._session.commit()
         except SQLAlchemyError:
             await self._session.rollback()
