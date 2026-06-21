@@ -3,9 +3,10 @@ import logging
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.cache.agent_state import read_agent_state
+from app.cache.agent_state import read_agent_state, write_agent_state
 from app.models.agent import Agent
 from app.repositories.agent import get_agent, insert_agent, list_agents
+from app.repositories.telemetry import get_latest_telemetry_for_agent
 from app.schemas.agent import AgentCreate, AgentCurrentState, AgentLatestState
 
 logger = logging.getLogger(__name__)
@@ -35,22 +36,21 @@ class AgentService:
         get_agent=get_agent,
         list_agents=list_agents,
         read_agent_state=read_agent_state,
+        get_latest_telemetry=get_latest_telemetry_for_agent,
+        write_agent_state=write_agent_state,
     ) -> None:
         self._session = session
         self._insert_agent = insert_agent
         self._get_agent = get_agent
         self._list_agents = list_agents
         self._read_agent_state = read_agent_state
+        self._get_latest_telemetry = get_latest_telemetry
+        self._write_agent_state = write_agent_state
 
     async def create_agent(self, payload: AgentCreate) -> Agent:
-        """Persist a new agent and return the refreshed database row.
-
-        Owns the transaction boundary: rolls back on a database failure and
-        re-raises so the global handler logs the traceback once (no logging
-        here). Logs the created agent id as the business outcome.
-        """
+        """Persist a new agent and return the refreshed database row."""
+        agent = await self._insert_agent(self._session, payload)
         try:
-            agent = await self._insert_agent(self._session, payload)
             await self._session.commit()
         except SQLAlchemyError:
             await self._session.rollback()
@@ -78,16 +78,43 @@ class AgentService:
         return agent
 
     async def get_current_state(self) -> list[AgentCurrentState]:
-        """Merge each agent's identity (Postgres) with its latest state (Redis).
+        """Merge each agent's identity (Postgres) with its latest state.
 
-        Agents with no cached state are returned with ``latest_state`` as None
-        rather than skipped.
+        Reads Redis first (fast path). On a cache miss, falls back to the most
+        recent telemetry row in Postgres and repopulates Redis so future reads
+        are fast again. Agents with no telemetry history get ``latest_state``
+        as None rather than being skipped.
         """
         agents = await self._list_agents(self._session)
         result: list[AgentCurrentState] = []
         for agent in agents:
             raw = await self._read_agent_state(agent.id)
-            latest = AgentLatestState(**raw) if raw is not None else None
+            if raw is not None:
+                latest = AgentLatestState(**raw)
+            else:
+                row = await self._get_latest_telemetry(self._session, agent.id)
+                if row is not None:
+                    latest = AgentLatestState(
+                        lat=row.lat,
+                        lng=row.lng,
+                        speed=row.speed,
+                        battery=row.battery,
+                        status=row.status,
+                        recorded_at=row.recorded_at,
+                    )
+                    try:
+                        await self._write_agent_state(row)
+                    except Exception:
+                        logger.warning(
+                            "agent_state_cache_repopulate_failed",
+                            extra={
+                                "event": "agent.state.cache_repopulate_failed",
+                                "agent_id": agent.id,
+                            },
+                            exc_info=True,
+                        )
+                else:
+                    latest = None
             result.append(
                 AgentCurrentState(
                     id=agent.id,

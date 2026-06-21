@@ -1,11 +1,9 @@
-import json
 import logging
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.cache.client import redis_client
-from app.cache.keys import agent_state_key
+from app.cache.agent_state import write_agent_state
 from app.models.telemetry import Telemetry
 from app.realtime.socket import TELEMETRY_UPDATED_EVENT, emit_agent_telemetry_updated
 from app.repositories.agent import get_agent
@@ -28,17 +26,9 @@ async def update_latest_state(row: Telemetry) -> None:
 
     Module-level so it can be injected into ``TelemetryService`` as the Redis
     latest-state writer dependency (and mocked in tests without a live Redis).
+    Delegates serialisation to the shared cache writer.
     """
-    state = {
-        "agent_id": row.agent_id,
-        "lat": row.lat,
-        "lng": row.lng,
-        "speed": row.speed,
-        "battery": row.battery,
-        "status": row.status,
-        "recorded_at": row.recorded_at.isoformat(),
-    }
-    await redis_client.set(agent_state_key(row.agent_id), json.dumps(state))
+    await write_agent_state(row)
 
 
 class TelemetryService:
@@ -47,7 +37,7 @@ class TelemetryService:
     Constructed once per request, bound to the request-scoped ``AsyncSession``
     (see the route provider). The agent lookup, telemetry insert, Redis writer,
     and Socket.IO emitter are injected as keyword arguments defaulting to the real
-    implementations, so tests can substitute fakes. The service owns the
+    implementations, so tests can substitute fakes. The repository owns the
     transaction boundary; the WebSocket emit is best-effort.
     """
 
@@ -71,19 +61,19 @@ class TelemetryService:
     ) -> Telemetry:
         """Persist telemetry, refresh the Redis latest-state, and emit the live event.
 
-        Fixed ordering: verify agent exists -> insert -> commit -> refresh ->
-        Redis write -> Socket.IO emit. Owns the transaction (rolls back on a DB
-        failure and re-raises). The emit is best-effort: a push failure logs a
-        WARNING and does not change the successful response, while a Redis or
-        Postgres failure propagates and skips the emit. Raises AgentNotFoundError
-        for an unknown agent.
+        Fixed ordering: verify agent exists -> insert (repository commits) ->
+        Redis write -> Socket.IO emit. The emit is best-effort: a push failure
+        logs a WARNING and does not change the successful response, while a Redis
+        or Postgres failure propagates and skips the emit. Raises
+        AgentNotFoundError for an unknown agent.
         """
 
         if await self._get_agent(self._session, agent_id) is None:
             raise AgentNotFoundError(agent_id)
 
+        telemetry = await self._insert_telemetry(self._session, agent_id, payload)
+
         try:
-            telemetry = await self._insert_telemetry(self._session, agent_id, payload)
             await self._session.commit()
         except SQLAlchemyError:
             await self._session.rollback()
