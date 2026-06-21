@@ -87,7 +87,7 @@ class AgentService:
         """
         agents = await self._list_agents(self._session)
         result: list[AgentCurrentState] = []
-        for agent in agents:
+        for agent in agents:                                   # inefficient
             raw = await self._read_agent_state(agent.id)
             if raw is not None:
                 latest = AgentLatestState(**raw)

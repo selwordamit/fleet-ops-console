@@ -39,7 +39,6 @@ async def insert_alert(
         message=message,
     )
     session.add(row)
-    await session.flush()
     return row
 
 
@@ -49,7 +48,6 @@ async def resolve_alert(
     resolved_at: datetime,
 ) -> Alert:
     alert.resolved_at = resolved_at
-    await session.flush()
     return alert
 
 

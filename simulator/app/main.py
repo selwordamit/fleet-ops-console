@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from .client import BackendClient
@@ -7,7 +8,7 @@ from .simulator import Simulator
 logger = logging.getLogger(__name__)
 
 
-def main() -> None:
+async def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -27,9 +28,9 @@ def main() -> None:
     client = BackendClient(config.backend_url)
     simulator = Simulator(config, client)
 
-    simulator.register_agents()
-    simulator.run()
+    await simulator.register_agents()
+    await simulator.run()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

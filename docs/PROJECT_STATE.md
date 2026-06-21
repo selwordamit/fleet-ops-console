@@ -111,6 +111,20 @@ Still pending in the backend API area: telemetry-history read API and `/health` 
 - Status-colored `L.divIcon` markers, one per agent that has `latest_state`; agents without telemetry are skipped (no coordinate to plot). Clicking a marker selects the agent (shared `selectedId`/`onSelect` with the list and detail panel).
 - Replaces the earlier map *placeholder*.
 
+### Current-state recovery — Redis-miss fallback to PostgreSQL ✓
+
+Bug: after `docker compose down` (no `-v`) and restarting only `postgres + redis + backend`, `GET /api/agents/current-state` returned every agent with `"latest_state": null` even though PostgreSQL still held full telemetry history. Redis is a cache; an empty cache after restart does not mean the data is gone.
+
+Fix:
+
+- Added `get_latest_telemetry_for_agent(session, agent_id) -> Telemetry | None` to `backend/app/repositories/telemetry.py` — queries the newest telemetry row per agent (ORDER BY `recorded_at DESC`, LIMIT 1).
+- Added `write_agent_state(row) -> None` to `backend/app/cache/agent_state.py` — centralises the Redis serialisation previously duplicated inside `TelemetryService.update_latest_state`, which now delegates to it.
+- Updated `AgentService.get_current_state`: reads Redis first (fast path); on a cache miss, falls back to the latest Postgres telemetry row, builds `AgentLatestState` from that row, and repopulates Redis (best-effort — a Redis write failure logs a WARNING and still returns the Postgres data).
+- Agents with no telemetry history remain `latest_state: null`.
+- No contract, schema, status-code, Socket.IO, or simulator change.
+
+Tests: 4 new `test_agent_service.py` cases (Redis hit / Redis miss → PG hit / Redis miss → PG miss / cache repopulation failure is best-effort) and 3 new `test_telemetry_repository.py` cases (returns newest row / None when empty / no commit-rollback-refresh). Total: **90 passed**.
+
 ### WebSocket telemetry MVP — live push end-to-end ✓
 
 Built on the existing contract (`docs/ws-protocol.md`) and Socket.IO foundation (`app/realtime/socket.py`).

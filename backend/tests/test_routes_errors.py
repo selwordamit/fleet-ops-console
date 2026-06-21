@@ -125,6 +125,7 @@ def test_telemetry_success_emits_no_info_log(caplog):
         insert_telemetry=AsyncMock(return_value=_telemetry_row()),
         update_latest_state=AsyncMock(),
         emit_telemetry_updated=AsyncMock(),
+        evaluate_telemetry_alerts=AsyncMock(return_value=[]),
     )
 
     with caplog.at_level(logging.INFO):

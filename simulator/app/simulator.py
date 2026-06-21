@@ -1,6 +1,6 @@
+import asyncio
 import logging
 import random
-import time
 from dataclasses import dataclass
 
 from .client import BackendClient
@@ -43,14 +43,14 @@ class Simulator:
         self._client = client
         self._agents: list[AgentState] = []
 
-    def register_agents(self) -> int:
+    async def register_agents(self) -> int:
         """Register every placement spec; returns how many succeeded."""
 
         specs = build_agent_specs(self._config)
         registered = 0
 
         for spec in specs:
-            agent_id = self._client.register_agent(spec.name, spec.type, spec.status)
+            agent_id = await self._client.register_agent(spec.name, spec.type, spec.status)
             if agent_id is None:
                 continue
 
@@ -68,7 +68,7 @@ class Simulator:
         logger.info("Registered %d/%d agents", registered, len(specs))
         return registered
 
-    def run(self) -> None:
+    async def run(self) -> None:
         """Send telemetry for all agents every telemetry_interval_seconds until stopped."""
 
         if not self._agents:
@@ -83,21 +83,20 @@ class Simulator:
 
         try:
             while True:
-                sent = self._tick()
+                sent = await self._tick()
                 logger.info("Telemetry tick: %d/%d sent", sent, len(self._agents))
-                time.sleep(self._config.telemetry_interval_seconds)
+                await asyncio.sleep(self._config.telemetry_interval_seconds)
         except KeyboardInterrupt:
             logger.info("Simulator stopped by user.")
 
-    def _tick(self) -> int:
-        """Send one telemetry update per agent; returns how many were accepted."""
+    async def _tick(self) -> int:
+        """Send one telemetry update per agent concurrently; returns how many were accepted."""
 
-        sent = 0
-        for state in self._agents:
-            payload = _next_telemetry(state)
-            if self._client.send_telemetry(state.agent_id, payload):
-                sent += 1
-        return sent
+        results = await asyncio.gather(
+            *[self._client.send_telemetry(state.agent_id, _next_telemetry(state))
+              for state in self._agents]
+        )
+        return sum(results)
 
 
 def _next_telemetry(state: AgentState) -> dict:
