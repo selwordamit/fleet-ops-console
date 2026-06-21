@@ -1,11 +1,9 @@
-import json
 import logging
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.cache.client import redis_client
-from app.cache.keys import agent_state_key
+from app.cache.agent_state import write_agent_state
 from app.models.telemetry import Telemetry
 from app.realtime.socket import TELEMETRY_UPDATED_EVENT, emit_agent_telemetry_updated
 from app.repositories.agent import get_agent
@@ -28,17 +26,9 @@ async def update_latest_state(row: Telemetry) -> None:
 
     Module-level so it can be injected into ``TelemetryService`` as the Redis
     latest-state writer dependency (and mocked in tests without a live Redis).
+    Delegates serialisation to the shared cache writer.
     """
-    state = {
-        "agent_id": row.agent_id,
-        "lat": row.lat,
-        "lng": row.lng,
-        "speed": row.speed,
-        "battery": row.battery,
-        "status": row.status,
-        "recorded_at": row.recorded_at.isoformat(),
-    }
-    await redis_client.set(agent_state_key(row.agent_id), json.dumps(state))
+    await write_agent_state(row)
 
 
 class TelemetryService:
