@@ -10,7 +10,14 @@ class BackendClient:
     def __init__(self, base_url: str, timeout: float = 5.0) -> None:
         self._base_url = base_url
         self._timeout = timeout
-        self._client = httpx.AsyncClient(timeout=timeout)
+        # Pool sized to the simulator's send concurrency (MAX_CONCURRENT_SENDS=50):
+        # no point allowing more open connections than there are concurrent sends,
+        # and keepalive matches so connections are reused across waves/ticks
+        # instead of being torn down and reopened.
+        self._client = httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=50),
+        )
 
     async def register_agent(self, name: str, type_: str, status: str) -> int | None:
         """POST /api/agents to register an agent"""

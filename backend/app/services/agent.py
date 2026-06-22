@@ -8,6 +8,7 @@ from app.models.agent import Agent
 from app.repositories.agent import get_agent, insert_agent, list_agents
 from app.repositories.telemetry import get_latest_telemetry_for_agent
 from app.schemas.agent import AgentCreate, AgentCurrentState, AgentLatestState
+from app.services.telemetry import register_known_agent
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,9 @@ class AgentService:
             await self._session.rollback()
             raise
         await self._session.refresh(agent)
+        # Keep the telemetry hot-path agent-id cache in sync so this agent's
+        # telemetry is accepted without waiting for a process restart/reload.
+        register_known_agent(agent.id)
         logger.info(
             "agent_created",
             extra={"event": "agent.created", "agent_id": agent.id, "agent_type": agent.type},

@@ -25,6 +25,13 @@ MAX_STEP_DEG = 0.0003
 
 BATTERY_DRAIN_PER_TICK = 0.5
 
+# Cap concurrent in-flight telemetry sends. Firing one request per agent at once
+# (asyncio.gather over the whole fleet) saturates the simulator's event loop and
+# exhausts httpx's connection pool, so requests time out before reaching the
+# backend. A semaphore turns the burst into steady waves. Kept in lockstep with
+# the httpx connection limit in client.py.
+MAX_CONCURRENT_SENDS = 50
+
 
 @dataclass
 class AgentState:
@@ -90,12 +97,19 @@ class Simulator:
             logger.info("Simulator stopped by user.")
 
     async def _tick(self) -> int:
-        """Send one telemetry update per agent concurrently; returns how many were accepted."""
+        """Send one telemetry update per agent, with bounded concurrency; returns how many were accepted."""
 
-        results = await asyncio.gather(
-            *[self._client.send_telemetry(state.agent_id, _next_telemetry(state))
-              for state in self._agents]
-        )
+        # At most MAX_CONCURRENT_SENDS requests are in flight at any moment, so a
+        # large fleet streams in steady waves instead of one giant burst.
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_SENDS)
+
+        async def _send(state: AgentState) -> bool:
+            async with semaphore:
+                return await self._client.send_telemetry(
+                    state.agent_id, _next_telemetry(state)
+                )
+
+        results = await asyncio.gather(*[_send(state) for state in self._agents])
         return sum(results)
 
 

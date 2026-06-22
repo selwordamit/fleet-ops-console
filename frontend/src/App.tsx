@@ -4,9 +4,9 @@ import "./App.css";
 import { getCurrentState } from "./api/agents";
 import AgentsTable from "./features/agents/AgentsTable";
 import FleetMap from "./features/map/FleetMap";
-import type { AgentCurrentState, AgentStatus } from "./types/agent";
+import type { AgentCurrentState, AgentLatestState, AgentStatus } from "./types/agent";
 import { socket } from "./realtime/socket";
-import type { AgentTelemetryUpdatedEvent } from "./types/socket";
+import type { AgentTelemetryBatchEvent } from "./types/socket";
 
 // Sidebar filter keys: every status, plus "all" and the no-telemetry bucket.
 type FilterKey = AgentStatus | "all" | "no-telemetry";
@@ -79,7 +79,7 @@ export default function App() {
   }, [agents]);
 
   // Socket.IO lifecycle for the whole App. The client connects, receives
-  // agent.telemetry.updated events, and applies each latest_state to the
+  // agent.telemetry.batch events, and applies each item's latest_state to the
   // existing React agents state so the map, list, and details update live.
   // Named handlers give stable references so cleanup can remove exactly these.
   useEffect(() => {
@@ -135,10 +135,8 @@ export default function App() {
       // deduplicated authoritative snapshot resync.
       resyncCurrentState("reconnect");
     }
-    function onTelemetryUpdated(event: AgentTelemetryUpdatedEvent) {
-      console.log("[socket] agent.telemetry.updated:", event);
-
-      const { agent_id, latest_state } = event.payload;
+    function onTelemetryBatch(event: AgentTelemetryBatchEvent) {
+      console.log("[socket] agent.telemetry.batch:", event.payload.length, "updates");
 
       // Decide known-vs-unknown OUTSIDE the state updater: updaters must be pure
       // and may run twice under StrictMode, so no network side effects belong in
@@ -146,23 +144,45 @@ export default function App() {
       const current = agentsRef.current;
       if (current === null) return; // snapshot not loaded yet — ignore until it is
 
-      if (current.some((a) => a.id === agent_id)) {
-        // Known agent: immutable replace of only this agent's latest_state.
+      const knownIds = new Set(current.map((a) => a.id));
+
+      // Build latest_state per known agent in this batch. The batch items omit
+      // recorded_at, so the envelope `ts` is the recorded time for the window.
+      const updates = new Map<number, AgentLatestState>();
+      let hasUnknown = false;
+      for (const item of event.payload) {
+        if (!knownIds.has(item.agent_id)) {
+          hasUnknown = true;
+          continue;
+        }
+        updates.set(item.agent_id, {
+          lat: item.lat,
+          lng: item.lng,
+          speed: item.speed,
+          battery: item.battery,
+          status: item.status,
+          recorded_at: event.ts,
+        });
+      }
+
+      if (updates.size > 0) {
+        // Immutable replace of only the latest_state of agents present in the batch.
         setAgents((currentAgents) =>
           currentAgents === null
             ? currentAgents
             : currentAgents.map((a) =>
-                a.id === agent_id ? { ...a, latest_state } : a,
+                updates.has(a.id) ? { ...a, latest_state: updates.get(a.id)! } : a,
               ),
         );
-        return;
       }
 
-      // Unknown agent (not in the snapshot). The event carries no stable identity
-      // (name/type), so we must NOT append a partial agent. Fetch the authoritative
-      // current-state once (deduplicated); subsequent events for this agent then
-      // take the incremental path above.
-      resyncCurrentState(`unknown agent_id=${agent_id}`);
+      // Unknown agents (not in the snapshot) carry no stable identity (name/type),
+      // so we must NOT append partial agents. The first such item triggers a single
+      // deduplicated authoritative resync; subsequent batches then take the
+      // incremental path above.
+      if (hasUnknown) {
+        resyncCurrentState("unknown agent in batch");
+      }
     }
 
     // Register before connecting so the immediate connect/connection.ready
@@ -170,7 +190,7 @@ export default function App() {
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
     socket.on("connection.ready", onConnectionReady);
-    socket.on("agent.telemetry.updated", onTelemetryUpdated);
+    socket.on("agent.telemetry.batch", onTelemetryBatch);
     // Reconnection events live on the Manager (socket.io), not the socket.
     socket.io.on("reconnect_attempt", onReconnectAttempt);
     socket.io.on("reconnect", onReconnect);
@@ -181,7 +201,7 @@ export default function App() {
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
       socket.off("connection.ready", onConnectionReady);
-      socket.off("agent.telemetry.updated", onTelemetryUpdated);
+      socket.off("agent.telemetry.batch", onTelemetryBatch);
       socket.io.off("reconnect_attempt", onReconnectAttempt);
       socket.io.off("reconnect", onReconnect);
       socket.disconnect();
