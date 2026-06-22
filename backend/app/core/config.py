@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     api_prefix: str = "/api" 
     database_url: str = "postgresql+asyncpg://fleetops:fleetops@localhost:5432/fleetops"
     redis_url: str = "redis://localhost:6379/0"
+    low_battery_threshold: float = 15.0
     model_config = {"env_file": ".env"}
 
 

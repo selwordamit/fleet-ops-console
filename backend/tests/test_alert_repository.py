@@ -1,8 +1,8 @@
 """Unit tests for the alert repository.
 
 All collaborators (AsyncSession) are injected as mocks so these run without
-a live Postgres. Tests lock in that the repository flushes staged writes but
-does NOT commit, rollback, or refresh — the service owns the transaction.
+a live Postgres. Tests lock in that the repository does NOT flush, commit,
+rollback, or refresh — the service owns the transaction boundary entirely.
 """
 
 import asyncio
@@ -80,14 +80,14 @@ def test_get_active_alert_issues_a_query():
     session.scalars.assert_awaited_once()
 
 
-def test_get_active_alert_does_not_commit_or_flush():
+def test_get_active_alert_does_not_flush_or_commit():
     session = _session()
     session.scalars.return_value = _scalars_result([])
 
     asyncio.run(get_active_alert(session, agent_id=1, alert_type=AlertType.low_battery))
 
-    session.commit.assert_not_awaited()
     session.flush.assert_not_awaited()
+    session.commit.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +118,7 @@ def test_insert_alert_creates_row_with_correct_fields():
     assert result.message == "Battery low"
 
 
-def test_insert_alert_calls_add_then_flush():
+def test_insert_alert_calls_add():
     session = _session()
 
     result = asyncio.run(
@@ -134,10 +134,9 @@ def test_insert_alert_calls_add_then_flush():
     )
 
     session.add.assert_called_once_with(result)
-    session.flush.assert_awaited_once()
 
 
-def test_insert_alert_does_not_commit_rollback_or_refresh():
+def test_insert_alert_does_not_flush_commit_rollback_or_refresh():
     session = _session()
 
     asyncio.run(
@@ -152,6 +151,7 @@ def test_insert_alert_does_not_commit_rollback_or_refresh():
         )
     )
 
+    session.flush.assert_not_awaited()
     session.commit.assert_not_awaited()
     session.rollback.assert_not_awaited()
     session.refresh.assert_not_awaited()
@@ -182,23 +182,14 @@ def test_resolve_alert_returns_same_alert_object():
     assert result is alert
 
 
-def test_resolve_alert_calls_flush():
+def test_resolve_alert_does_not_flush_commit_rollback_or_refresh():
     alert = Alert(agent_id=1, alert_type=AlertType.low_battery)
     ts = datetime(2026, 6, 20, 12, 0, 0, tzinfo=timezone.utc)
     session = _session()
 
     asyncio.run(resolve_alert(session, alert=alert, resolved_at=ts))
 
-    session.flush.assert_awaited_once()
-
-
-def test_resolve_alert_does_not_commit_rollback_or_refresh():
-    alert = Alert(agent_id=1, alert_type=AlertType.low_battery)
-    ts = datetime(2026, 6, 20, 12, 0, 0, tzinfo=timezone.utc)
-    session = _session()
-
-    asyncio.run(resolve_alert(session, alert=alert, resolved_at=ts))
-
+    session.flush.assert_not_awaited()
     session.commit.assert_not_awaited()
     session.rollback.assert_not_awaited()
     session.refresh.assert_not_awaited()
@@ -242,11 +233,11 @@ def test_list_active_alerts_returns_empty_list_when_none_active():
     assert result == []
 
 
-def test_list_active_alerts_does_not_commit_or_flush():
+def test_list_active_alerts_does_not_flush_or_commit():
     session = _session()
     session.scalars.return_value = _scalars_result([])
 
     asyncio.run(list_active_alerts(session))
 
-    session.commit.assert_not_awaited()
     session.flush.assert_not_awaited()
+    session.commit.assert_not_awaited()

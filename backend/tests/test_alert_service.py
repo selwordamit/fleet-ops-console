@@ -249,3 +249,57 @@ def test_service_does_not_commit_rollback_or_refresh_on_resolve():
     session.commit.assert_not_awaited()
     session.rollback.assert_not_awaited()
     session.refresh.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# evaluate_telemetry_alerts — general integration point used by TelemetryService
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_telemetry_alerts_returns_empty_list_when_no_change():
+    svc, _ = _make_service(get_active_alert=AsyncMock(return_value=None))
+
+    result = asyncio.run(
+        svc.evaluate_telemetry_alerts(
+            agent_id=AGENT_ID, battery=20.0, low_battery_threshold=THRESHOLD
+        )
+    )
+
+    assert result == []
+
+
+def test_evaluate_telemetry_alerts_returns_single_item_on_trigger():
+    inserted = Alert(agent_id=AGENT_ID, alert_type=AlertType.low_battery)
+    svc, _ = _make_service(
+        get_active_alert=AsyncMock(return_value=None),
+        insert_alert=AsyncMock(return_value=inserted),
+    )
+
+    result = asyncio.run(
+        svc.evaluate_telemetry_alerts(
+            agent_id=AGENT_ID, battery=10.0, low_battery_threshold=THRESHOLD
+        )
+    )
+
+    assert len(result) == 1
+    assert result[0].kind == "triggered"
+    assert result[0].alert is inserted
+
+
+def test_evaluate_telemetry_alerts_returns_single_item_on_resolve():
+    active = Alert(agent_id=AGENT_ID, alert_type=AlertType.low_battery)
+    resolved = Alert(agent_id=AGENT_ID, alert_type=AlertType.low_battery)
+    svc, _ = _make_service(
+        get_active_alert=AsyncMock(return_value=active),
+        resolve_alert=AsyncMock(return_value=resolved),
+    )
+
+    result = asyncio.run(
+        svc.evaluate_telemetry_alerts(
+            agent_id=AGENT_ID, battery=20.0, low_battery_threshold=THRESHOLD
+        )
+    )
+
+    assert len(result) == 1
+    assert result[0].kind == "resolved"
+    assert result[0].alert is resolved

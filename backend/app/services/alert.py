@@ -47,6 +47,27 @@ class AlertService:
         self._insert_alert = insert_alert
         self._resolve_alert = resolve_alert
 
+    async def evaluate_telemetry_alerts(
+        self,
+        *,
+        agent_id: int,
+        battery: float,
+        low_battery_threshold: float,
+    ) -> list[AlertChange]:
+        """Evaluate all telemetry-triggered alert rules for one agent.
+
+        Currently evaluates the low-battery rule only. Returns a list so future
+        rules (speeding, offline, …) can be appended without changing the caller.
+        Returns [] when no state change occurred.
+        """
+        changes: list[AlertChange] = []
+
+        change = await self.evaluate_low_battery(agent_id, battery, low_battery_threshold)
+        if change is not None:
+            changes.append(change)
+
+        return changes
+
     async def evaluate_low_battery(
         self,
         agent_id: int,

@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 import socketio
 from fastapi import FastAPI, Request
@@ -9,6 +10,7 @@ from app.api.routes.health import router as health_router
 from app.api.routes.telemetry import router as telemetry_router
 from app.core.config import settings
 from app.realtime.socket import sio
+from app.services.telemetry import batcher
 
 # Single, minimal logging setup for the whole backend process. Guarded so we do
 # not clobber a host/uvicorn-provided configuration. Kept here (app assembly)
@@ -21,8 +23,16 @@ if not logging.getLogger().handlers:
 
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    batcher.start()
+    yield
+    await batcher.stop()
+
+
 # The FastAPI app owns all REST routes exactly as before.
-api = FastAPI(title=settings.app_name)
+api = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 api.include_router(health_router)
 api.include_router(agents_router, prefix=settings.api_prefix)
