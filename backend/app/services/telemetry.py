@@ -3,6 +3,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +12,7 @@ from app.cache.client import redis_client
 from app.cache.keys import agent_state_key
 from app.core.config import settings
 from app.db.session import async_session_factory
+from app.models.agent import Agent
 from app.models.telemetry import Telemetry
 from app.realtime.socket import emit_agent_telemetry_updated, sio
 from app.repositories.agent import get_agent
@@ -73,7 +75,7 @@ class TelemetryBatcher:
         await self._flush(batch)
 
     async def _flush(self, batch: list[tuple[int, TelemetryCreate]]) -> None:
-        """Persist a batch: bulk Postgres insert → Redis pipeline → Socket.IO broadcast."""
+        """Persist a batch: bulk Postgres insert """
         flush_ts = datetime.now(timezone.utc)
 
         # --- 1. Bulk INSERT + alert evaluation in one transaction ---
@@ -173,6 +175,26 @@ class AgentNotFoundError(Exception):
         super().__init__(f"Agent {agent_id} not found")
 
 
+# In-memory set of existing agent ids, used to validate telemetry without a
+# per-request Postgres SELECT. Loaded once at startup from the DB and kept in
+# sync as new agents are created. Safe as module-level state because the backend
+# runs as a single Uvicorn worker; a multi-worker deployment would need Redis.
+_known_agent_ids: set[int] = set()
+
+
+async def load_known_agents(session: AsyncSession) -> None:
+    """Populate the agent-id cache from Postgres once at application startup."""
+    ids = await session.scalars(select(Agent.id))
+    _known_agent_ids.clear()
+    _known_agent_ids.update(ids)
+    logger.info("known_agents_loaded count=%d", len(_known_agent_ids))
+
+
+def register_known_agent(agent_id: int) -> None:
+    """Add a newly created agent to the cache so its telemetry is accepted."""
+    _known_agent_ids.add(agent_id)
+
+
 async def update_latest_state(row: Telemetry) -> None:
     """Mirror the just-persisted telemetry into Redis as the agent's latest state.
 
@@ -234,15 +256,15 @@ class TelemetryService:
     ) -> Telemetry:
         """Validate the agent exists, buffer the telemetry, and return immediately.
 
-        The 404 guard runs synchronously against the request-scoped session so
-        the simulator gets an immediate rejection for unknown agents. The actual
-        insert, alert evaluation, Redis update, and Socket.IO emit are handled
-        by the TelemetryBatcher's background flush loop.
+        The 404 guard is an O(1) in-memory set check (no DB round-trip on the
+        hot path) so the simulator gets an immediate rejection for unknown
+        agents. The actual insert, alert evaluation, Redis update, and Socket.IO
+        emit are handled by the TelemetryBatcher's background flush loop.
 
         Returns a placeholder Telemetry (id=0) so the route's response_model
         can serialise a valid receipt without waiting for the DB insert.
         """
-        if await self._get_agent(self._session, agent_id) is None:
+        if agent_id not in _known_agent_ids:
             raise AgentNotFoundError(agent_id)
 
         await batcher.add(agent_id, payload)

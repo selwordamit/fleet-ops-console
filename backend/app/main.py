@@ -9,8 +9,9 @@ from app.api.routes.agents import router as agents_router
 from app.api.routes.health import router as health_router
 from app.api.routes.telemetry import router as telemetry_router
 from app.core.config import settings
+from app.db.session import async_session_factory
 from app.realtime.socket import sio
-from app.services.telemetry import batcher
+from app.services.telemetry import batcher, load_known_agents
 
 # Single, minimal logging setup for the whole backend process. Guarded so we do
 # not clobber a host/uvicorn-provided configuration. Kept here (app assembly)
@@ -27,6 +28,10 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     batcher.start()
+    # Warm the in-memory agent-id cache so telemetry validation avoids a
+    # per-request Postgres SELECT on the hot path.
+    async with async_session_factory() as session:
+        await load_known_agents(session)
     yield
     await batcher.stop()
 

@@ -4,9 +4,12 @@ The real-time event contract for the Fleet Operations Console. This document is
 written **before** any Socket.IO code so the backend Pydantic event schemas and
 the frontend TypeScript types both conform to one wire format.
 
-> **Status:** MVP scope. This document defines exactly **one** event:
-> `agent.telemetry.updated`. Everything else is explicitly out of scope (see
-> [Out of scope](#out-of-scope)).
+> **Status:** Post-MVP. The active telemetry event is now
+> [`agent.telemetry.batch`](#event-agenttelemetrybatch) — a single broadcast per
+> flush window introduced by the backend batching refactor. The original
+> per-agent [`agent.telemetry.updated`](#event-agenttelemetryupdated-deprecated)
+> event is **deprecated** and no longer emitted. Everything else is explicitly
+> out of scope (see [Out of scope](#out-of-scope)).
 
 > **Source of truth note:** Postgres remains the source of truth for telemetry
 > history. Redis remains the latest/current-state cache. The backend remains the
@@ -48,7 +51,13 @@ Contract Rules*). The event name goes in `type`; the event-specific data goes in
 
 ---
 
-## Event: `agent.telemetry.updated`
+## Event: `agent.telemetry.updated` (deprecated)
+
+> **Deprecated — no longer emitted.** Superseded by
+> [`agent.telemetry.batch`](#event-agenttelemetrybatch). The backend batching
+> refactor replaced this per-agent event with a single batched broadcast per
+> flush window. This section is retained for historical reference; the contract
+> below describes the old wire format and should **not** be relied on by clients.
 
 ### Direction
 
@@ -147,26 +156,136 @@ This `latest_state` shape is **identical** to `AgentLatestState` returned by
 
 ---
 
+## Event: `agent.telemetry.batch`
+
+### Direction
+
+**Backend → Frontend.** The backend emits this event to connected clients. The
+frontend only listens; it never sends this event.
+
+### Purpose
+
+Notify connected operators that one or more agents have reported new telemetry,
+so the map, list, and detail views update live without a manual refresh. This is
+the **active** telemetry event, replacing the deprecated per-agent
+`agent.telemetry.updated`.
+
+### Why batched
+
+The backend buffers incoming telemetry and drains it on a fixed interval (the
+`TelemetryBatcher` flush loop). Each flush performs one bulk Postgres insert, one
+Redis pipeline, and **one** Socket.IO broadcast covering every agent that
+reported in that window — regardless of fleet size. This keeps the real-time
+channel flat under hundreds/thousands of agents instead of emitting one event per
+agent per tick.
+
+### Flow
+
+```text
+Simulator
+  -> POST /api/agents/{agent_id}/telemetry   (many agents, concurrently)
+  -> Backend validates payload, appends to the batch buffer
+  -> Batcher flush loop (every flush_interval):
+       -> bulk INSERT to Postgres (+ alert evaluation) in one transaction
+       -> Redis pipeline updates each agent's latest state (last write wins)
+       -> emits ONE agent.telemetry.batch covering the whole window  <-- this event
+  -> Frontend applies every item in the batch to map / list / detail
+```
+
+### Emit timing
+
+The batch is emitted **after** the flush's Postgres transaction commits. The
+Redis pipeline and the emit are best-effort within the same flush: a Redis or
+emit failure is logged and does not roll back the durable insert. If the Postgres
+transaction fails, the batch is rolled back and **not** emitted for that window.
+
+### Payload shape
+
+`payload` is an **array** of flat per-agent items (note: no nested
+`latest_state`, and **no `recorded_at`** — the envelope `ts` is the recorded time
+for every item in the window):
+
+```ts
+{
+  agent_id: number;
+  lat: number;
+  lng: number;
+  speed: number;
+  battery: number;
+  status: "idle" | "en-route" | "stopped" | "offline";
+}[]
+```
+
+- Backend producer: `backend/app/services/telemetry.py` → `TelemetryBatcher._flush`
+  (event name constant `TELEMETRY_BATCH_EVENT = "agent.telemetry.batch"`).
+- Frontend types: `frontend/src/types/socket.ts` →
+  `AgentTelemetryBatchEvent` / `AgentTelemetryBatchItem`.
+- Status values: `backend/app/schemas/enums.py` → `AgentStatus`
+  (`idle | en-route | stopped | offline`).
+
+If an agent reports more than once within a single flush window, only its **last**
+reading appears in the batch (last write wins for current state).
+
+### Example
+
+```json
+{
+  "type": "agent.telemetry.batch",
+  "payload": [
+    {
+      "agent_id": 1,
+      "lat": 32.0853,
+      "lng": 34.7818,
+      "speed": 42.5,
+      "battery": 87.0,
+      "status": "en-route"
+    },
+    {
+      "agent_id": 2,
+      "lat": 32.0901,
+      "lng": 34.7720,
+      "speed": 0.0,
+      "battery": 64.0,
+      "status": "idle"
+    }
+  ],
+  "ts": "2026-06-22T09:15:03Z"
+}
+```
+
+### Field notes
+
+- The envelope omits `requestId`: a batch aggregates many ingestions, so no single
+  correlation id applies.
+- Each item omits `recorded_at`; the frontend uses the envelope `ts` as the
+  recorded time for every item in that batch.
+- Items omit agent metadata (`name`, `type`) for the same reason as the deprecated
+  event: those are stable identity fields the frontend already holds from the
+  initial snapshot.
+
+---
+
 ## Frontend consumption model
 
 1. **Initial load (snapshot):** the dashboard loads the full fleet via
    `GET /api/agents/current-state` (REST). This is the source for the initial
    render, including agent identity (`name`, `type`) and any agents that have not
    reported telemetry yet (`latest_state: null`).
-2. **Live updates:** the frontend then applies each `agent.telemetry.updated`
-   event by replacing the matching agent's `latest_state` in place.
+2. **Live updates:** the frontend then applies each `agent.telemetry.batch`
+   event by iterating its `payload` array and replacing each matching agent's
+   `latest_state` in place, using the envelope `ts` as `recorded_at`.
 
 REST remains the way the dashboard snapshot is loaded; the WebSocket event is the
-way that snapshot is kept live afterward. The two share the `latest_state` shape
-on purpose.
+way that snapshot is kept live afterward.
 
-Handling an event for an `agent_id` **not** present in the current snapshot (e.g.
-an agent registered after load) is now supported: because the event carries no
+Handling a batch item for an `agent_id` **not** present in the current snapshot
+(e.g. an agent registered after load) is supported: because the item carries no
 stable identity (`name`/`type`), the client does **not** construct a partial
-agent. Instead the first such event triggers a single, deduplicated re-fetch of
-`GET /api/agents/current-state` and replaces the whole agents array; subsequent
-events for that now-known agent take the normal incremental path. The event
-payload is unchanged — this is purely client recovery behavior.
+agent. Instead the first such unknown item in a batch triggers a single,
+deduplicated re-fetch of `GET /api/agents/current-state` and replaces the whole
+agents array; subsequent batches for that now-known agent take the normal
+incremental path. The payload is unchanged — this is purely client recovery
+behavior.
 
 ---
 
@@ -182,7 +301,6 @@ This document and checkpoint deliberately exclude:
 - Rooms.
 - Redis pub/sub fan-out.
 - Multi-worker scaling.
-- Event batching.
 - Retry / replay.
 - Telemetry history streaming.
 - Marker clustering.
