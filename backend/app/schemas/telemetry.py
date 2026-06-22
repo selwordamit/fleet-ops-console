@@ -16,6 +16,22 @@ class TelemetryCreate(BaseModel):
     status: AgentStatus
 
 
+class TelemetryBatchItem(TelemetryCreate):
+    """One agent's telemetry within a batch: the standard fields plus its agent_id.
+
+    Inherits TelemetryCreate so the per-field validation (and use_enum_values) is
+    identical to the single-agent ingest path; only agent_id is added.
+    """
+
+    agent_id: int = Field(gt=0)
+
+
+class TelemetryBatchRequest(BaseModel):
+    """One request carrying telemetry for many agents, sent once per simulator tick."""
+
+    agents: list[TelemetryBatchItem]
+
+
 class TelemetryRead(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
