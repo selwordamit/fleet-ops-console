@@ -17,7 +17,7 @@ from app.models.telemetry import Telemetry
 from app.realtime.socket import emit_agent_telemetry_updated, sio
 from app.repositories.agent import get_agent
 from app.repositories.telemetry import insert_telemetry
-from app.schemas.telemetry import TelemetryCreate
+from app.schemas.telemetry import TelemetryBatchItem, TelemetryCreate
 from app.services.alert import AlertChange, AlertService
 
 logger = logging.getLogger(__name__)
@@ -281,3 +281,21 @@ class TelemetryService:
             status=payload.status,
             recorded_at=datetime.now(timezone.utc),
         )
+
+    async def ingest_telemetry_batch(self, items: list[TelemetryBatchItem]) -> int:
+        """Buffer telemetry for many agents in one call; return the count accepted.
+
+        Same hot-path guarantees as ingest_telemetry: each agent is validated
+        against the in-memory _known_agent_ids set (no DB round-trip) and known
+        agents are appended to the batcher. Unknown agents are skipped rather than
+        failing the whole batch, so a single stale id can't drop a tick's data.
+        """
+        accepted = 0
+        for item in items:
+            if item.agent_id not in _known_agent_ids:
+                continue
+            # TelemetryBatchItem subclasses TelemetryCreate, so it carries every
+            # field the batcher reads; no reconstruction needed on the hot path.
+            await batcher.add(item.agent_id, item)
+            accepted += 1
+        return accepted

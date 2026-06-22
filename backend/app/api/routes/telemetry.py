@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
-from app.schemas.telemetry import TelemetryCreate, TelemetryRead
+from app.schemas.telemetry import TelemetryBatchRequest, TelemetryCreate, TelemetryRead
 from app.services.telemetry import AgentNotFoundError, TelemetryService
 
 logger = logging.getLogger(__name__)
@@ -47,3 +47,18 @@ async def post_telemetry(
             extra={"event": "telemetry.ingest.not_found", "agent_id": agent_id},
         )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@router.post("/agents/telemetry/batch", status_code=status.HTTP_201_CREATED)
+async def post_telemetry_batch(
+    payload: TelemetryBatchRequest,
+    service: TelemetryService = Depends(get_telemetry_service),
+) -> dict:
+    """Ingest telemetry for many agents in one request (one POST per simulator tick).
+
+    Unknown agents are skipped by the service rather than failing the whole batch,
+    so the response carries the count of accepted items for the caller to detect
+    partial drops.
+    """
+    accepted = await service.ingest_telemetry_batch(payload.agents)
+    return {"accepted": accepted}

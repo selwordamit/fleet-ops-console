@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import random
+import time
 from dataclasses import dataclass
 
 from .client import BackendClient
@@ -24,13 +25,6 @@ DEPLETED_STATUS = "offline"
 MAX_STEP_DEG = 0.0003
 
 BATTERY_DRAIN_PER_TICK = 0.5
-
-# Cap concurrent in-flight telemetry sends. Firing one request per agent at once
-# (asyncio.gather over the whole fleet) saturates the simulator's event loop and
-# exhausts httpx's connection pool, so requests time out before reaching the
-# backend. A semaphore turns the burst into steady waves. Kept in lockstep with
-# the httpx connection limit in client.py.
-MAX_CONCURRENT_SENDS = 50
 
 
 @dataclass
@@ -56,6 +50,7 @@ class Simulator:
         specs = build_agent_specs(self._config)
         registered = 0
 
+        start = time.time()
         for spec in specs:
             agent_id = await self._client.register_agent(spec.name, spec.type, spec.status)
             if agent_id is None:
@@ -71,6 +66,9 @@ class Simulator:
                 )
             )
             registered += 1
+
+        duration = time.time() - start
+        logger.info("Total registration took %.3fs for %d agents", duration, registered)
 
         logger.info("Registered %d/%d agents", registered, len(specs))
         return registered
@@ -97,20 +95,33 @@ class Simulator:
             logger.info("Simulator stopped by user.")
 
     async def _tick(self) -> int:
-        """Send one telemetry update per agent, with bounded concurrency; returns how many were accepted."""
+        """Bundle every agent's telemetry into one request; returns how many were accepted.
 
-        # At most MAX_CONCURRENT_SENDS requests are in flight at any moment, so a
-        # large fleet streams in steady waves instead of one giant burst.
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_SENDS)
+        Replaces the previous one-request-per-agent fan-out (asyncio.gather over the
+        whole fleet) with a single batch POST, so a 10k-agent fleet costs one HTTP
+        request per tick instead of 10k.
+        """
 
-        async def _send(state: AgentState) -> bool:
-            async with semaphore:
-                return await self._client.send_telemetry(
-                    state.agent_id, _next_telemetry(state)
-                )
+        batch = []
+        for state in self._agents:
+            item = _next_telemetry(state)
+            item["agent_id"] = state.agent_id
+            batch.append(item)
 
-        results = await asyncio.gather(*[_send(state) for state in self._agents])
-        return sum(results)
+        start = time.time()
+        accepted = await self._client.send_telemetry_batch(batch)
+        # The batch endpoint accepts or rejects the whole request; on success
+        # every item in the batch was buffered.
+        sent = len(batch) if accepted else 0
+
+        duration = time.time() - start
+        logger.info(
+            "Tick completed in %.3fs agents=%d sent=%d",
+            duration,
+            len(self._agents),
+            sent,
+        )
+        return sent
 
 
 def _next_telemetry(state: AgentState) -> dict:
