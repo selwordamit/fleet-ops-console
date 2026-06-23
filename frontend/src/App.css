@@ -256,6 +256,22 @@ body { margin: 0; }
   box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--accent), 0 0 16px var(--accent);
 }
 
+/* ============ Cluster bubble overrides (react-leaflet-cluster) ============ */
+.marker-cluster-small,
+.marker-cluster-medium,
+.marker-cluster-large {
+  background: rgba(94, 234, 212, 0.15) !important;
+}
+
+.marker-cluster-small div,
+.marker-cluster-medium div,
+.marker-cluster-large div {
+  background: rgba(94, 234, 212, 0.30) !important;
+  color: #d7fff5 !important;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+}
+
 /* ============ Responsive: stack columns on narrow screens ============ */
 @media (max-width: 1100px) {
   .foc-app { height: auto; min-height: 100vh; overflow: visible; }

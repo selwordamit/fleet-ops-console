@@ -63,6 +63,9 @@ export default function App() {
   // Guards against overlapping current-state resyncs (a reconnect and/or repeated
   // unknown-agent events): at most one REST resync is in flight at a time.
   const resyncInProgressRef = useRef(false);
+  // Accumulates telemetry updates between 1-second flush ticks. Latest value per
+  // agent_id wins when multiple batches arrive within the same tick window.
+  const pendingUpdatesRef = useRef<Map<number, AgentLatestState>>(new Map());
 
   useEffect(() => {
     getCurrentState()
@@ -166,14 +169,13 @@ export default function App() {
       }
 
       if (updates.size > 0) {
-        // Immutable replace of only the latest_state of agents present in the batch.
-        setAgents((currentAgents) =>
-          currentAgents === null
-            ? currentAgents
-            : currentAgents.map((a) =>
-                updates.has(a.id) ? { ...a, latest_state: updates.get(a.id)! } : a,
-              ),
-        );
+        // Merge into the pending map instead of calling setAgents directly.
+        // The 1-second flush interval below applies all accumulated updates in
+        // one React state update, capping re-renders at 1/s regardless of how
+        // many batches arrive.
+        for (const [id, state] of updates) {
+          pendingUpdatesRef.current.set(id, state);
+        }
       }
 
       // Unknown agents (not in the snapshot) carry no stable identity (name/type),
@@ -206,6 +208,27 @@ export default function App() {
       socket.io.off("reconnect", onReconnect);
       socket.disconnect();
     };
+  }, []);
+
+  // Flush accumulated telemetry updates into React state at most once per second.
+  // With 5 000–10 000 agents and batches arriving every 100 ms this keeps
+  // re-renders at 1/s instead of 10/s, eliminating the multi-second UI freeze.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (pendingUpdatesRef.current.size === 0) return;
+      // Snapshot and clear before the state update so any events that arrive
+      // during the synchronous map() below land in a fresh pending map.
+      const snapshot = new Map(pendingUpdatesRef.current);
+      pendingUpdatesRef.current.clear();
+      setAgents((currentAgents) =>
+        currentAgents === null
+          ? currentAgents
+          : currentAgents.map((a) =>
+              snapshot.has(a.id) ? { ...a, latest_state: snapshot.get(a.id)! } : a,
+            ),
+      );
+    }, 1000);
+    return () => clearInterval(id);
   }, []);
 
   // Derived summary over the real, already-loaded agents.

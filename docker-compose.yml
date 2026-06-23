@@ -26,7 +26,7 @@ services:
       BACKEND_URL: http://backend:8000
       # Sensible defaults for a containerized run; override as needed.
       SIMULATION_MODE: local_cluster
-      AGENT_COUNT: "5000"
+      AGENT_COUNT: "10000"
       TELEMETRY_INTERVAL_SECONDS: "5"
     depends_on:
       backend:
