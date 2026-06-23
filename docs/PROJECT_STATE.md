@@ -6,15 +6,11 @@ This file is the current working state of the project. Update it after each mean
 
 ## Current Phase
 
-Backend REST core + basic simulator verified, and **backend + simulator are now Dockerized and wired into Compose** alongside Postgres and Redis (`docker compose up --build` runs `postgres + redis + backend + simulator`; the frontend service is deferred behind a `frontend` profile and not built). The simulator checkpoint was implemented before frontend/WebSocket to verify Simulator → Backend communication early — so this does **not** mean every original build-order step before Step 8 is complete (alerts, commands, auth/RBAC are still not implemented; see *Known Issues / Not Implemented Yet*).
+**Performance phase complete.** The full stack runs at production scale: 10,000 agents, one batch POST per simulator tick, a 100 ms backend flush loop, and a responsive browser UI. `docker compose up --build` brings up all five services — Postgres, Redis, backend, simulator, and frontend — with health-check-gated startup ordering.
 
-The backend REST core that the simulator exercises: ingestion (`POST /api/agents/{agent_id}/telemetry`) persists history to Postgres and updates Redis latest state, the minimal Agent API (create/list/get) registers agents through backend REST, and `GET /api/agents/current-state` reads agents from Postgres and their latest state from Redis so clients never touch the cache directly. API-level status enum validation restricts `AgentCreate.status` and `TelemetryCreate.status` to the allowed values.
+The real-time pipeline is end-to-end: the simulator sends one `POST /api/agents/telemetry/batch` per tick, the backend `TelemetryBatcher` drains it every 100 ms with a bulk Postgres insert, a Redis pipeline, and one `agent.telemetry.batch` Socket.IO broadcast. The frontend receives that broadcast, accumulates updates in a ref, and flushes them to React state at most once per second (throttle). The agent list renders only ~25 DOM rows at any zoom via `@tanstack/react-virtual`. Leaflet markers cluster at all zooms below 18 via `react-leaflet-cluster`, preventing thousands of DOM marker elements at city view.
 
-The basic simulator now registers fake agents and POSTs telemetry **only** through the backend REST API (`POST /api/agents`, `POST /api/agents/{id}/telemetry`) — it never touches Postgres or Redis directly. It is configurable via environment variables (mode, agent count, interval, base location, spread, scenario file) and supports two placement modes: `local_cluster` (controlled spread around a base point) and `fixed_points` (exact locations from a scenario JSON file). See `docs/simulator-usage.md` for the run/verify guide.
-
-A **frontend dashboard** now exists under `frontend/` (Vite + React + TypeScript): it renders `GET /api/agents/current-state` as a dark control-room dashboard (summary cards + agents table + a **real Leaflet map** with status-colored markers on CartoDB Dark Matter tiles). It uses a Vite dev proxy (`/api` → `http://localhost:8000`) and a plain typed `fetch` for the initial snapshot, and it now consumes the **live WebSocket channel**: a shared Socket.IO client connects to the backend and `agent.telemetry.updated` events are merged into the existing agents state, so the map/list/summary/detail update live without a refresh. A compact header indicator shows the live connection status (**Live / Reconnecting / Disconnected**); Socket.IO reconnects automatically, and after a **real reconnect** the frontend re-fetches `GET /api/agents/current-state` and **replaces** the agents array with that authoritative snapshot to correct any events missed while disconnected. Still no TanStack Query/Zustand (live state is held in `useState` for now), no routing, and no auth.
-
-Still pending in the backend API area: telemetry-history read API and `/health` connectivity reporting.
+Alerts MVP is implemented: low-battery rules are evaluated inside every batcher flush within the same Postgres transaction. Auth/RBAC, commands, telemetry history charts, and multi-worker scaling remain deferred (see *Known Issues / Not Implemented Yet*).
 
 ---
 
@@ -177,6 +173,42 @@ Observability/documentation refactor on top of the logging/exception cleanup; no
 - Logging stays `getLogger(__name__)`; config remains centralized in `main.py` (no `basicConfig` outside it).
 - Tests: `tests/test_routes_errors.py` expanded (warning logs, INFO-success, telemetry no-INFO), `tests/test_agent_service.py` gains a DB-failure rollback test, `tests/test_telemetry_service.py` asserts the structured emit WARNING. Full suite: **55 passed**.
 
+### Alerts MVP (Step 9 partial) ✓
+
+Low-battery alert evaluation is wired into the telemetry batcher flush. `AlertService.evaluate_telemetry_alerts` runs inside the same Postgres transaction as the bulk telemetry insert, so alert state is always consistent with persisted telemetry. Alert threshold is configurable via `LOW_BATTERY_THRESHOLD` in settings. Alert persistence and WebSocket alert events to clients are the deferred remainder of this step.
+
+### Backend performance — TelemetryBatcher + batch endpoint + in-memory agent cache ✓
+
+Three layered changes to handle 10 000 agents at 100 ms flush cadence:
+
+- **`TelemetryBatcher`** (`app/services/telemetry.py`): callers append to an in-memory buffer in O(1); a background asyncio task drains it every 100 ms with: (1) one bulk Postgres `INSERT` in a single transaction (+ alert evaluation), (2) one Redis pipeline updating every agent's `agent:{id}:state` key (last write wins for the flush window), (3) one `agent.telemetry.batch` Socket.IO broadcast covering the entire window. Started/stopped by the FastAPI lifespan hook in `main.py`.
+- **Batch ingest endpoint** `POST /api/agents/telemetry/batch`: accepts a JSON array of per-agent telemetry items. Unknown `agent_id`s are skipped (not a 404) so one stale id cannot drop a whole tick's data. Returns the count accepted.
+- **In-memory agent-id cache** (`_known_agent_ids` set in `telemetry.py`): populated from Postgres once at startup, kept in sync as agents are created. Validation on the hot ingest path is an O(1) set lookup — no per-request DB round-trip.
+
+### Simulator — async batch refactor ✓
+
+The per-agent sequential HTTP loop (one `POST /api/agents/{id}/telemetry` per agent per tick) was replaced with a single `POST /api/agents/telemetry/batch` per tick. The simulator builds the full tick payload in memory and sends it in one request; `BackendClient.send_telemetry_batch` uses `httpx` (async). A 10 000-agent tick completes in ~0.05 s.
+
+### Frontend — agent.telemetry.batch event migration ✓
+
+`App.tsx` was updated to listen for `agent.telemetry.batch` (the active batched event) instead of the deprecated `agent.telemetry.updated`. The `onTelemetryBatch` handler receives an array of updates, resolves known/unknown agent ids against `agentsRef`, and accumulates updates into `pendingUpdatesRef`; a 1-second `setInterval` flushes them into React state in a single `setAgents()` call. All existing reconnect, resync, and unknown-agent-recovery logic is preserved.
+
+### Frontend — Dockerization + Compose wiring ✓
+
+`frontend/Dockerfile` builds the Vite app and serves it with a Node dev server on port 5173. `docker-compose.yml` wires the `frontend` service (previously behind a profile) as a first-class service with `VITE_PROXY_TARGET: http://backend:8000` and `VITE_SOCKET_URL: http://localhost:8000`, `depends_on: backend: service_healthy`. The full stack — Postgres, Redis, backend, simulator, frontend — now starts with `docker compose up --build`.
+
+### Frontend — performance trifecta (throttle + virtualize + cluster) ✓
+
+Three independent changes to keep the browser responsive with 10 000 agents:
+
+- **1-second state update throttle** (`App.tsx`): `onTelemetryBatch` writes incoming updates into `pendingUpdatesRef` (a `Map<agentId, AgentLatestState>`); a `setInterval` flushes them into React state once per second. Latest value per agent_id wins within each window. Caps re-renders at 1/s regardless of batch frequency.
+- **Virtualized agent table** (`AgentsTable.tsx`): `@tanstack/react-virtual` `useVirtualizer` renders only the ~25 rows currently in the scroll viewport. A spacer div of `agents.length × 56px` keeps the scrollbar accurate. Constant DOM size regardless of fleet size.
+- **Marker clustering** (`FleetMap.tsx`): `react-leaflet-cluster` (`MarkerClusterGroup`) collapses nearby markers into cluster bubbles at zoom < 18 (`disableClusteringAtZoom={18}`, `maxClusterRadius={50}`). At city view the browser renders tens of DOM elements, not thousands. Cluster bubbles are restyled to the teal design system via `App.css` (`.marker-cluster-*` overrides). Individual markers, click handlers, and icon logic are unchanged.
+
+### Map — pan/zoom to selected agent (MapController) ✓
+
+A `MapController` component (render-null, rendered inside `<MapContainer>` so it can call `useMap()`) watches `selectedId` and calls `map.setView([lat, lng], 18, { animate: true })` when the selection changes. A `prevSelectedIdRef` guards against re-firing on every telemetry re-render: `setView` fires only when `selectedId` differs from what the ref recorded, then the ref is updated. Zoom 18 matches `disableClusteringAtZoom` so the selected agent is always unclustered.
+
 ### WebSocket frontend hardening — env-based socket URL + unknown-agent recovery ✓
 
 Frontend-only (`socket.ts`, `App.tsx`, `vite-env.d.ts`, `.env.example`, `.gitignore`); no backend, contract, or Docker change.
@@ -331,45 +363,37 @@ Notes:
 
 ## Known Issues / Not Implemented Yet
 
-- Redis is used for latest-state writes on telemetry ingestion, but no pub/sub, rate limiting, refresh-token store, presence, or offline detection yet.
-- `/health` does not yet report DB/Redis status (still returns only `{"status": "ok"}`).
-- Agent API is create/list/get only — **no update or delete**, no pagination.
-- `status` is validated against the shared `AgentStatus` enum at the API layer, but the DB column is still a plain `String` — direct SQL or any future non-validated path could still write an invalid status until a DB-level enum/CheckConstraint is added.
-- Current-state API does one Redis `GET` per agent (no `MGET`/pipelining yet); no pagination.
-- No telemetry-history read API yet.
-- No User, Alert, or Command models yet.
-- Telemetry is a single simple table; no partitioning or retention yet (deferred scalability work).
-- WebSocket: `agent.telemetry.updated` is emitted end-to-end, the frontend applies it live, a **connection-status indicator** is shown, a real reconnect triggers a **REST resync**, the backend socket URL is now **env-based** (`VITE_SOCKET_URL`, fail-fast if missing), and **late-registered (unknown) agents** are now recovered via a deduplicated current-state resync (shared with reconnect; no partial agent appended). Pieces still deferred: the socket is **unauthenticated** (dev CORS `*`), there is no UI backpressure/throttling, and it is single-worker only (no Redis pub/sub fan-out).
-- Frontend gaps remain: live state is held in `useState` (no TanStack Query/Zustand yet); beyond the initial snapshot + live socket merge there is no manual refresh/polling, no routing, and no auth; and there is still **no frontend Dockerfile** (the `frontend` Compose service stays behind a `frontend` profile, not built). The map is now a **real Leaflet map** and live WebSocket updates work — both previously listed here as missing. Under React `StrictMode` the mount effects double-fire in dev (harmless; absent in production).
-- No alerts or commands (no command creation, no ACK flow).
-- No auth/JWT/RBAC.
-- No offline detection.
+- Redis is used for latest-state writes and current-state reads. No pub/sub fan-out, rate limiting, refresh-token store, presence, or offline detection yet. Multi-worker scaling (Redis pub/sub manager) is deferred.
+- `/health` does not yet report DB/Redis connectivity status (returns only `{"status": "ok"}`).
+- Agent API is create/list/get only — no update or delete, no pagination.
+- `status` is validated at the API layer by the shared `AgentStatus` Pydantic enum but the DB column is a plain `String` — a direct SQL write could bypass the constraint until a DB-level enum/CheckConstraint is added.
+- Current-state API does one Redis `GET` per agent (no `MGET`/pipelining); no pagination.
+- No telemetry-history read API (needed for the agent detail history charts).
+- Alerts: evaluation runs inside the batcher flush (low-battery threshold). Alert persistence to a dedicated table, WebSocket alert events to clients, and the frontend alert panel are not yet implemented.
+- No commands — no command creation, pending state, simulator ACK, or `command.ack` WebSocket event.
+- No auth/JWT/RBAC. All routes and the Socket.IO connection are unauthenticated. Dev CORS is `*`.
+- No offline detection (no background sweep marking agents offline when they stop reporting).
+- No User model or management API.
+- Telemetry is a single append-heavy table; no partitioning or retention yet (deferred scalability work).
+- Live state is held in `useState` in `App.tsx` — no TanStack Query or Zustand yet. No routing, no manual refresh/polling beyond the reconnect resync.
+- Under React StrictMode the mount effects double-fire in dev (harmless; absent in production builds).
 
-### Simulator — implemented, with known deferrals
+### Simulator — known deferrals
 
-The basic simulator works and is verified, and it is now Dockerized and wired into Compose. The following are intentionally not implemented yet:
-
-- No WebSocket — the simulator only uses REST; it does not consume live events.
-- No command/ACK support — the simulator cannot yet receive or acknowledge commands.
+- No command/ACK support — the simulator cannot receive or acknowledge commands.
 - No simulator-side auth/RBAC (matches the still-unprotected backend routes).
-- No reuse / upsert / reset of agents.
-- Sends are sequential and synchronous (one HTTP request per agent per tick); no async or batched sending.
-
-Known simulator tradeoffs:
-
-- **Repeated runs create new agents** — there is no reuse/upsert, so every run registers a fresh set; dev cleanup is currently manual (see `docs/simulator-usage.md`).
-- `local_cluster` movement is a **controlled random walk**, not real route/road simulation.
-- High agent counts (e.g. ~1000) may require larger `TELEMETRY_INTERVAL_SECONDS`, or future async/batched sends, because requests are currently sequential and synchronous.
+- No agent reuse/upsert/reset — repeated runs register fresh agents; dev cleanup is manual (see `docs/simulator-usage.md`).
+- `local_cluster` movement is a controlled random walk, not road/route simulation.
 
 ---
 
 ## Next Step
 
-The next checkpoint will be chosen before implementation — candidates:
+Candidates in priority order:
 
-- WebSocket hardening (remaining): socket auth, UI throttling/backpressure, and Redis pub/sub multi-worker fan-out. (Connection-status indicator, reconnect re-sync, env-based socket URL, and unknown-agent recovery are now done.)
-- Migrate live state to **Zustand** (per the frontend rules) once it outgrows `App.tsx`.
-- Alerts (build-order Step 9): rules, evaluation, persistence, and alert WebSocket events (reuse the emit pattern).
-- Telemetry history read API (for charts).
+- **Alerts completion** — alert persistence (dedicated table + migration), WebSocket `alert.triggered` event to clients, frontend alert panel. Evaluation already runs in the batcher; this is the emit + UI half.
+- **Commands** (build-order Step 10) — `POST /api/agents/{id}/commands`, `pending` state, simulator ACK loop, `command.ack` WebSocket event, optimistic frontend UI.
+- **Auth/JWT/RBAC** (build-order Step 11) — JWT access + refresh tokens, bcrypt hashing, role guards on REST routes and Socket.IO connection.
+- **Telemetry history read API** — newest-N rows per agent, feeds the agent detail charts.
 
 Do not decide broadly here; the specific next checkpoint will be selected at the start of the next step.

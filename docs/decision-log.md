@@ -455,3 +455,131 @@ Tradeoff: discovering a new agent costs a coarse full-fleet `current-state` fetc
 Impact on the project: Closes the env-based-socket-URL and unknown-agent items. `VITE_SOCKET_URL` is now external configuration. The shared deduplicated "reconnect / unknown-agent -> authoritative current-state resync" pattern is the recovery model later realtime channels (alerts, commands/ACKs) can reuse. No backend, payload, status-code, Redis-key, or WebSocket-contract change.
 
 Verification: `cd frontend && npm run build` passes; env injection confirmed by building with a sentinel `VITE_SOCKET_URL` (inlined) and fail-fast confirmed by building with it absent (no value inlined -> runtime throw). `cd backend && python -m pytest -q` -> 55 passed, no backend files changed. Live backend check: an agent registered after a snapshot emits `agent.telemetry.updated` and appears in a fresh `current-state` -- the exact data path the resync consumes. Browser manual steps (header Live, live map/table/detail updates, single resync per discovery, StrictMode no-duplicate) documented for human verification.
+
+---
+
+## 2026-06-23 | TelemetryBatcher: decouple HTTP ingest from I/O with an in-process buffer
+
+Context: With 10 000 agents POSTing every 5 seconds the naive flow — one Postgres INSERT + one Redis SET + one Socket.IO emit per HTTP request — could not keep up. Each tick was 10 000 separate round-trips to the DB and Redis.
+
+Decision: Replace the per-request write path with a `TelemetryBatcher` singleton (started/stopped by the FastAPI lifespan). The HTTP handler validates the agent (O(1) set lookup) and appends to an in-memory buffer; a background asyncio task drains the buffer every 100 ms with: one bulk `INSERT` into Postgres (+ alert evaluation) in a single transaction, one Redis pipeline updating all per-agent state keys (last write wins), and one `agent.telemetry.batch` Socket.IO broadcast covering the whole window. Returns a placeholder receipt (id=0) immediately so the HTTP response does not wait for the flush.
+
+Alternatives: Celery/task queue (separate broker service, deployment complexity); asyncio.gather over per-agent DB writes (still N round-trips, just concurrent); Postgres COPY (harder to integrate with SQLAlchemy ORM and alert evaluation).
+
+Reason: An in-process asyncio buffer is the simplest correct solution at single-worker scale: zero new infrastructure, the flush loop runs in the same event loop, and latency between ingestion and persistence is bounded to the flush interval (100 ms by default). The pattern makes the hot path O(1) regardless of fleet size.
+
+Tradeoff: Updates are persisted asynchronously — a process crash within the 100 ms window can lose the buffered tick. Acceptable: telemetry is high-frequency; losing one tick is not an audit failure. The placeholder receipt (id=0) means callers cannot rely on the response for the final DB id.
+
+Verification: `docker compose up --build`; 10 000-agent tick logged at ~0.05 s; Postgres row count growing; Socket.IO broadcast visible in browser DevTools as one `agent.telemetry.batch` event per flush.
+
+---
+
+## 2026-06-23 | Batch telemetry ingest endpoint: skip unknowns rather than 404 the batch
+
+Context: The simulator sends all agents in a single POST. A 404 on any one unknown agent_id would drop the entire tick's data for the fleet.
+
+Decision: `POST /api/agents/telemetry/batch` accepts a JSON array of items. Unknown `agent_id`s are silently skipped (not a 404); known ones are appended to the batcher. Returns `{"accepted": N}` with the count of buffered items.
+
+Alternatives: 404 on first unknown (drops whole batch — unacceptable); 207 multi-status per item (complex response contract for a fire-and-forget path); separate registration check before accept (extra round-trip on hot path).
+
+Reason: A single stale agent_id (e.g. a dev artifact from a previous run) must not silently discard 9 999 valid readings. Skipping and counting is the least-surprise behavior for a bulk ingestion endpoint.
+
+Tradeoff: Unknown agents produce no error visible to the simulator; diagnosing a mis-registered agent requires checking the `accepted` count vs batch size.
+
+Verification: Simulator log shows `agents=10000 sent=10000`; POST with one unknown id returns `{"accepted": 9999}`.
+
+---
+
+## 2026-06-23 | In-memory agent-id cache to eliminate per-request Postgres SELECTs on the hot path
+
+Context: Validating that a telemetry payload's `agent_id` exists before buffering it required a `SELECT` from Postgres on every ingest call. At 10 000 agents × 1 batch per tick this is one round-trip per flush — but in the old per-agent design it was 10 000 round-trips per tick.
+
+Decision: A module-level `_known_agent_ids: set[int]` is populated from Postgres once at application startup (`load_known_agents` called from the FastAPI lifespan). New agents are added to the set when created (`register_known_agent`). Telemetry validation is an O(1) `in` check — no DB round-trip on the hot path.
+
+Alternatives: Redis SET for agent ids (cross-worker safe, but adds a Redis round-trip; unnecessary at single-worker scale); per-request SELECT with connection pooling (still async latency on every ingest); skip validation (allows phantom agent_ids to pollute the telemetry table).
+
+Reason: At single-worker scale an in-process set is the fastest and simplest option. The CLAUDE.md note acknowledges this must move to Redis in a multi-worker deployment.
+
+Tradeoff: The set is process-local — a second Uvicorn worker would have a stale view. Documented as a known single-worker constraint.
+
+Verification: `GET /api/agents/current-state` returns agents; a telemetry POST with an unknown id returns 404 without a DB hit; timing logs show ~0 ms on the validation step.
+
+---
+
+## 2026-06-23 | agent.telemetry.batch replaces per-agent agent.telemetry.updated
+
+Context: The original `agent.telemetry.updated` event was emitted once per telemetry ingestion — one Socket.IO broadcast per agent per tick. With 10 000 agents and a 5-second interval that is 2 000 emits/second, each carrying one agent's state, producing a firehose the browser could not process.
+
+Decision: Deprecate `agent.telemetry.updated`; introduce `agent.telemetry.batch`. The batcher emits one broadcast per flush window covering every agent that reported in that window. The payload is a flat array of `{agent_id, lat, lng, speed, battery, status}`; the envelope `ts` is the recorded time for all items. The deprecated event remains documented in `docs/ws-protocol.md` for historical reference.
+
+Alternatives: Keep per-agent events and rely on frontend throttling alone (still N socket frames per flush, heavy on serialization and transport); SSE (unidirectional, fine, but already committed to Socket.IO); aggregate on the client via a queue (shifts the aggregation burden to every client independently).
+
+Reason: One emit per flush window is fundamentally cheaper than N emits regardless of client-side throttling. The flat array payload avoids nesting (`latest_state: {}`) so the frontend can apply it in a simple loop.
+
+Tradeoff: All items in a batch share the same `ts`; sub-window timing is lost. `requestId` is omitted from the batch envelope (no single correlation id applies to an aggregated batch).
+
+Verification: Browser DevTools shows one `agent.telemetry.batch` event per ~100 ms with a `payload` array of agent updates; `agent.telemetry.updated` is not emitted.
+
+---
+
+## 2026-06-23 | Frontend 1-second state update throttle via pendingUpdatesRef
+
+Context: `onTelemetryBatch` was calling `setAgents()` on every `agent.telemetry.batch` event. With batches arriving every 100 ms and 10 000 agents in state, this triggered a full React re-render 10 times per second — several seconds of browser freeze per update cycle.
+
+Decision: `onTelemetryBatch` writes updates into a `pendingUpdatesRef` (`useRef<Map<number, AgentLatestState>>(new Map())`) instead of calling `setAgents()`. A separate `useEffect` runs a `setInterval` at 1 000 ms; each tick snapshots the pending map, clears it, and calls one `setAgents()`. Latest value per `agent_id` wins within each 1-second window.
+
+Alternatives: `useDeferredValue` / `useTransition` (React concurrent features — still triggers a render per batch, just at lower priority; does not reduce render count); `requestAnimationFrame` accumulator (~16 ms cadence — still 60 re-renders/second); debounce (would delay the update by the full debounce period on every tick, never flushing under continuous load).
+
+Reason: A fixed 1-second flush is the simplest model that directly addresses the root cause (too many `setAgents` calls). It matches the operator's perceptual update rate — a 1-second map refresh is imperceptible in a real fleet context.
+
+Tradeoff: Operators see a position up to ~1 second stale. The snapshot-then-clear ordering before `setAgents` ensures events arriving during the synchronous `.map()` inside the updater land in the next window rather than being lost.
+
+Verification: With 10 000 agents the browser no longer freezes between updates; React DevTools profiler shows one re-render per second.
+
+---
+
+## 2026-06-23 | Virtualized agent table with @tanstack/react-virtual
+
+Context: `AgentsTable` called `agents.map()` and rendered one `<button>` per agent, creating up to 10 000 DOM elements. Every `setAgents()` triggered a commit of all 10 000 nodes — the dominant source of browser parse/layout time.
+
+Decision: Replace `agents.map()` with `useVirtualizer` from `@tanstack/react-virtual`. A scroll container ref is passed to the virtualizer; `getVirtualItems()` returns only the ~25 rows whose pixel range overlaps the current scroll position. Each row is `position: absolute` inside a single spacer `div` of `height: agents.length × 56px`, keeping the scrollbar accurate. `overscan: 5` renders 5 extra rows beyond the visible edge to prevent flashes during fast scrolling.
+
+Alternatives: Windowing with `react-window` or `react-virtualized` (older API, not hooks-based); paginating the table (changes the UX; operators expect a continuous scrollable list); lazy loading (still creates DOM on scroll, does not bound the maximum simultaneously mounted count).
+
+Reason: `@tanstack/react-virtual` is the modern, hooks-based windowing library from the TanStack ecosystem already used in the project (TanStack Query is planned). It integrates cleanly with the existing `<div className="foc-list foc-scroll">` scroll container without restructuring the component.
+
+Tradeoff: Rows are `position: absolute` with an explicit `height: 56px`; if CSS changes make the actual rendered height diverge from the estimate, rows will overlap or leave gaps. The `estimateSize` of 56 px was derived from the actual CSS (`padding: 11px 16px` + two-line text block + `border-bottom: 1px` under `box-sizing: border-box`).
+
+Verification: Chrome DevTools Elements panel shows ~25 `<button>` elements at any scroll position regardless of fleet size; scrolling through 10 000 agents is smooth.
+
+---
+
+## 2026-06-23 | Marker clustering with react-leaflet-cluster; disableClusteringAtZoom=18
+
+Context: With 10 000 agents the Leaflet map rendered 10 000 DOM marker elements at city zoom, causing multi-second parse/layout times on every telemetry update. The spec explicitly calls for marker clustering.
+
+Decision: Wrap all `<Marker>` elements in `<MarkerClusterGroup chunkedLoading disableClusteringAtZoom={18} maxClusterRadius={50}>` from `react-leaflet-cluster` (v2.x, compatible with `react-leaflet@4` / React 18; v4.x requires React 19 and was rejected). `disableClusteringAtZoom={18}` fully unclusters at zoom 18, guaranteeing every individual marker is reachable. `maxClusterRadius={50}` (default 80) tightens clusters at mid-zoom so they expand more gradually. `chunkedLoading` spreads the initial marker registration across animation frames to avoid a first-load freeze.
+
+Alternatives: `leaflet.markercluster` directly without the React wrapper (no lifecycle integration with react-leaflet); `react-leaflet-markercluster` (older, unmaintained); canvas-based rendering (more complex, different visual model); moving to a commercial map SDK (Mapbox GL JS has built-in clustering, but costs money and requires a key).
+
+Reason: `react-leaflet-cluster` is the maintained, React-idiomatic wrapper for Leaflet.markercluster. Installing v2.x (not the latest v4.x) was required because the project uses `react-leaflet@4` which depends on `@react-leaflet/core@2`, not the v3 core that the latest cluster package requires.
+
+Tradeoff: Cluster bubbles use Leaflet.markercluster's default green/yellow/orange styling by default. Overridden in `App.css` with `.marker-cluster-*` rules to match the teal design system. Selected markers inside a cluster are collapsed at zoom < 18; the `MapController` pans to zoom 18 on selection to uncollapse them.
+
+Verification: At zoom 12 the browser renders ~10–20 cluster bubbles instead of 10 000 markers; zooming to 18 expands all clusters; clicking any marker fires `onSelect(agent.id)`.
+
+---
+
+## 2026-06-23 | MapController: pan/zoom to selected agent; prevSelectedIdRef guards re-renders
+
+Context: Selecting an agent from the table had no visible map effect — the agent's marker could be hidden inside a cluster. Operators need the map to navigate to the selected agent automatically. Additionally, telemetry re-renders every ~1 second; without a guard, every re-render would call `setView` and prevent the operator from panning away.
+
+Decision: Add a `MapController` render-null component inside `<MapContainer>` (required so `useMap()` can access the Leaflet instance from React context). It holds a `prevSelectedIdRef` tracking the last `agent_id` it acted on. The `useEffect` fires on every `selectedId` or `located` change but calls `map.setView([lat, lng], 18, { animate: true })` only when `selectedId !== prevSelectedIdRef.current`, then updates the ref. Zoom 18 matches `disableClusteringAtZoom` so the target marker is guaranteed to be unclustered.
+
+Alternatives: A `useEffect` in `App.tsx` using an imperative ref to the map instance (requires threading the map ref through props); calling `setView` on every re-render (causes snap-back on every telemetry tick, preventing free pan/zoom); using `flyTo` instead of `setView` (smoother but longer animation — `setView` with `animate: true` is sufficient).
+
+Reason: The ref guard is the minimal correct solution: it distinguishes a genuine selection change (different id → act) from a telemetry re-render (same id → skip). The `MapController` pattern is idiomatic react-leaflet: components inside `<MapContainer>` access the map instance via context rather than through imperative refs threaded from parent components.
+
+Tradeoff: `MapController` receives the full `located` array on every render to find the selected agent's coordinates; this is a linear scan per selection change (acceptable at 10 000 agents — one scan per selection, not per tick).
+
+Verification: Clicking an agent in the table pans and zooms the map to that agent once; the operator can then freely zoom/pan; selecting a different agent triggers one new pan; re-renders between selections leave the map position unchanged.

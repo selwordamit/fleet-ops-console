@@ -30,7 +30,7 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** Built-in reconnect, event model, and a matching browser client reduce hand-rolled WebSocket plumbing. The spec calls for live updates and reconnect awareness.
 - **Alternatives considered:** Raw WebSockets (more manual reconnect/multiplexing), Server-Sent Events (one-directional).
 - **Tradeoff / cost:** Adds a protocol layer on top of WebSockets; both ends must agree on the message envelope.
-- **Status:** planned.
+- **Status:** implemented. `python-socketio` is mounted as an ASGI wrapper over the FastAPI app. The active event is `agent.telemetry.batch` (one broadcast per 100 ms flush window); the deprecated per-agent `agent.telemetry.updated` is no longer emitted. Connection-status indicator, reconnect resync, and unknown-agent recovery are all implemented on the frontend. Socket is still unauthenticated (dev CORS `*`); auth and Redis pub/sub fan-out are deferred.
 
 ## Database — PostgreSQL
 
@@ -86,7 +86,7 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** Open-source, no API key, and clustering keeps the map usable with many agents — a core spec requirement.
 - **Alternatives considered:** Mapbox/Google Maps (keys, cost, quotas).
 - **Tradeoff / cost:** Fewer built-in advanced features than commercial SDKs; clustering tuning needed at scale.
-- **Status:** planned — the dashboard currently shows a labeled **map placeholder** panel; Leaflet/OpenStreetMap is the next frontend checkpoint and is not installed yet.
+- **Status:** implemented. `react-leaflet` renders the map on CartoDB Dark Matter tiles. `react-leaflet-cluster` (v2.x, compatible with `react-leaflet@4` / React 18) provides `MarkerClusterGroup` with `disableClusteringAtZoom={18}` and `maxClusterRadius={50}`. Cluster bubbles are restyled to the teal design system via `App.css`. A `MapController` component pans/zooms to the selected agent once per selection change (guarded by `prevSelectedIdRef` to prevent snap-back on telemetry re-renders).
 
 ## Frontend state — TanStack Query + Zustand
 
@@ -94,7 +94,7 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** Clear split — cached server state vs. fast-changing live state — matching the spec's REST-vs-realtime data boundary.
 - **Alternatives considered:** Redux (more boilerplate), React Context only (re-render and caching issues).
 - **Tradeoff / cost:** Two state tools to learn and keep in their lanes.
-- **Status:** planned — neither is installed yet. The Dashboard MVP intentionally uses a plain `useEffect`/`useState` fetch for the single REST snapshot; TanStack Query (server-state caching/refetch) and Zustand (live Socket.IO state) are deferred until their benefits are needed.
+- **Status:** partially deferred. Neither TanStack Query nor Zustand is installed. Live state is held in `useState` in `App.tsx` (deliberate MVP deviation — will migrate to Zustand when live state spreads beyond `App.tsx`). `@tanstack/react-virtual` is installed and used in `AgentsTable.tsx` for row virtualization — a different TanStack package from TanStack Query.
 
 ## UI & charts — shadcn/ui + Recharts
 
@@ -110,7 +110,7 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** Behaves like external hardware and enforces the "backend is the only gatekeeper" rule — it never touches Postgres or Redis directly.
 - **Alternatives considered:** Generating fake data inside the backend (blurs the device boundary), direct DB seeding (bypasses validation).
 - **Tradeoff / cost:** One more service to run and configure (agent count, update rate).
-- **Status:** partial — simulator **behavior is implemented and verified locally**, and it is now **Dockerized and wired into Compose** (`simulator/Dockerfile`, `BACKEND_URL=http://backend:8000`). It registers agents and POSTs telemetry through backend REST only (never Postgres/Redis), with configurable agent count and two controlled placement modes (`local_cluster`, `fixed_points`) selected via environment variables. Run on the host with `python -m simulator.app.main`, or as a container via `docker compose up --build` (see `docs/simulator-usage.md`). Not yet implemented: command/ACK behavior; agent reuse/upsert/reset; async/batched sending for high agent counts.
+- **Status:** implemented. Dockerized and wired into Compose. Sends one `POST /api/agents/telemetry/batch` per tick (entire fleet in a single request) via `httpx` async client — replaced the original per-agent sequential loop. A 10 000-agent tick completes in ~0.05 s. Configurable via `AGENT_COUNT`, `TELEMETRY_INTERVAL_SECONDS`, `SIMULATION_MODE`, etc. Not yet implemented: command/ACK behavior; agent reuse/upsert/reset.
 
 ## Infra — Docker + Docker Compose
 
@@ -118,12 +118,12 @@ Status legend: **implemented** = working and verified · **planned** = chosen bu
 - **Why it fits:** Reproducible, per-project environment; the spec targets `docker compose up`.
 - **Alternatives considered:** Locally installed services, Kubernetes (overkill at this stage).
 - **Tradeoff / cost:** Requires Docker and port management (we hit and resolved a local Postgres conflict on 5432).
-- **Status:** partial — **backend and simulator are now Dockerized and wired** into Compose alongside Postgres and Redis. `docker compose up --build` brings up `postgres + redis + backend + simulator`; the backend applies migrations on startup and exposes `:8000`, and the simulator reaches it at `http://backend:8000`. Health checks gate startup order (backend waits for DB/Redis; simulator waits for backend `/health`). The **frontend** service is **not** built — it sits behind a `frontend` compose profile because no frontend exists yet.
+- **Status:** implemented. All five services — Postgres, Redis, backend, simulator, frontend — are Dockerized and wired in `docker-compose.yml`. `docker compose up --build` brings up the full stack; health checks gate startup order (backend waits for DB/Redis; simulator and frontend wait for backend `/health`). The backend applies Alembic migrations on startup. Frontend is served on `:5173` with `VITE_PROXY_TARGET` and `VITE_SOCKET_URL` injected via Compose environment.
 
 ---
 
 ## Current Status Summary
 
-- **Implemented:** FastAPI base app, `/health` endpoint, typed settings, `DATABASE_URL`, Docker Postgres, SQLAlchemy async session foundation, Alembic infrastructure, `Agent` + `Telemetry` models + migrations, telemetry ingestion + Redis latest-state cache, Agent API (create/list/get), current-state API, API-layer status enum validation, the basic configurable REST-only simulator (`local_cluster` + `fixed_points`, configurable agent count) run locally, and the **frontend Client REST Dashboard MVP** (Vite + React + TypeScript rendering `GET /api/agents/current-state` with summary + agents table + map placeholder).
-- **Partial:** Redis (latest-state writes done; pub/sub, rate limiting, refresh-token store, presence, offline detection planned); Docker Compose (Postgres, Redis, backend, and simulator wired and runnable via `docker compose up --build`; frontend service deferred behind a profile); simulator (behavior + Dockerization done; command/ACK, reuse/reset, async/batched sends planned); frontend (REST dashboard done; uses plain `fetch`, no TanStack Query/Zustand, map is a placeholder, no frontend Dockerfile).
-- **Planned / not yet implemented:** Socket.IO, JWT/RBAC, passlib/bcrypt, frontend map (Leaflet) + TanStack Query + Zustand + shadcn/ui + Recharts, frontend Dockerfile, alert/command models, alerts, commands, offline detection.
+- **Implemented:** FastAPI + Uvicorn, `/health`, typed settings, SQLAlchemy async + Alembic, `Agent` + `Telemetry` models + migrations, telemetry ingestion (per-agent and batch endpoints), `TelemetryBatcher` (100 ms flush, bulk Postgres insert, Redis pipeline, one Socket.IO broadcast), in-memory agent-id cache, Redis latest-state cache + Postgres fallback, Agent API (create/list/get), current-state API, status enum validation, Socket.IO (`python-socketio` ASGI wrapper, `agent.telemetry.batch` event, connection-status UI, reconnect resync, unknown-agent recovery), alerts MVP (low-battery evaluation in batcher flush), simulator (async batch POST via `httpx`, Dockerized, Compose-wired), full five-service Docker Compose stack, frontend (Vite + React + TypeScript, live map with Leaflet + `react-leaflet-cluster`, virtualized table with `@tanstack/react-virtual`, 1-second throttle, `MapController` pan/zoom, CartoDB Dark Matter tiles, teal cluster styling).
+- **Partial:** Redis (latest-state writes + reads done; pub/sub fan-out, rate limiting, refresh-token store, presence, offline detection deferred); alerts (evaluation done; persistence table, WebSocket emit, frontend panel deferred).
+- **Planned / not yet implemented:** JWT/RBAC + passlib/bcrypt, commands + ACK flow, alert WebSocket events + frontend panel, telemetry history read API + Recharts charts, TanStack Query, Zustand, shadcn/ui, offline detection, multi-worker Redis pub/sub scaling.
